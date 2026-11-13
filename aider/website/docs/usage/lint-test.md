@@ -76,7 +76,7 @@ using the `--test-cmd <test-command>` and
 
 ## Experimental TDD cycle
 
-This fork provides `/tdd <intention>` to perform up to two red/green cycles.
+This fork provides `/tdd <intention>` to perform up to ten red/green cycles.
 Start aider with the project's test command and relevant files in context:
 
 ```bash
@@ -89,19 +89,38 @@ Then give it an intention:
 /tdd Create primeFactors(n) returning its prime decomposition, such as "9 = 3*3"
 ```
 
+Override the cycle budget for a run with `/tdd --cycles 5 <intention>`.
+The budget limits red/green cycles; the model may stop earlier with completion
+or a clarification question.
+
 The controller checks that the baseline passes, asks the model for exactly one
-failing test, applies the edit and runs the suite. A separate model request reviews
+failing test as JSON, validates the proposal, applies the edit and runs the suite.
+The proposal has a `tests` collection with exactly one item (`path`, `imports`,
+and `code` containing the new test only), plus optional new production `stubs`.
+The controller adds any missing import lines and appends that one test; the model
+does not replace the existing test file. A rejected collection is sent back to the
+model for correction, with up to three proposals and no writes for rejected ones.
+This checks the collection size; it does not parse test definitions inside `code`.
+Node spec/TAP and unittest output counts provide an additional check after execution.
+A separate model request reviews
 the real failure output. If the model judges it to be the intended assertion
 failure, the controller requests the smallest production change and runs the suite
 again. Each editing response should contain only one version of each file.
 
-After the first green, another model request reviews the original intention,
+After each green, another model request reviews the original intention,
 current editable-file contents, tests and passing test output. It either selects
-one new concrete behavior, explains why the intention is complete, or asks a
-focused clarification question. The controller prints each cycle's selected
-behavior before requesting the next test. A second cycle starts only after the
-first suite passes. After two cycles it stops at the experiment's limit, without
-claiming the whole intention is complete.
+one new concrete behavior, identifies duplication to refactor, explains why the
+intention is complete, or asks a focused clarification question. For example,
+hardcoded production answers may duplicate the examples in tests. A refactor can
+replace those answers with a rule while keeping the tests and public API unchanged.
+It uses a separate model turn and real test run, then the controller decides again
+using the updated code and test output.
+
+The controller prints each selected behavior or refactoring before editing. It
+permits the configured number of red/green cycles and one refactor per green cycle.
+Refactoring does not consume a test cycle and can occur after the final green too.
+If more tests are selected after the budget is exhausted, it stops without claiming the
+whole intention is complete.
 
 During the cycle, the controller temporarily disables automatic lint/test repair,
 commits and suggested shell commands so they do not skip over the red phase. It
@@ -109,8 +128,8 @@ restores those settings afterward. Existing read-only files remain read-only;
 the red step can create a new test file and a minimal production stub.
 
 Phase boundaries, completion and failure assessment rely on model instructions
-and judgment. Automatic recovery, enforced file boundaries, longer runs,
-refactoring and PR delivery are future work. On an
+and judgment. Automatic recovery and enforced file boundaries
+and PR delivery are future work. On an
 unexpected result, it stops and leaves the files available for inspection.
 
 ## Compiled languages

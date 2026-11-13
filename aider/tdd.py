@@ -1,16 +1,23 @@
 import copy
 import json
+import re
 
 from aider.run_cmd import run_cmd
+from aider.tdd_red import RedProposal
 
 
 class TDDController:
-    """Run up to two explicit red/green cycles using Aider's existing editor."""
+    """Run a bounded sequence of red/green cycles using Aider's existing editor."""
 
-    max_cycles = 2
+    max_cycles = 10
 
-    def __init__(self, coder):
+    def __init__(self, coder, max_cycles=None):
         self.coder = coder
+        self.test_count = None
+        if max_cycles is not None:
+            if not isinstance(max_cycles, int) or max_cycles < 1:
+                raise ValueError("The cycle budget must be a positive integer")
+            self.max_cycles = max_cycles
 
     def run(self, intention):
         coder = self.coder
@@ -52,15 +59,26 @@ class TDDController:
                 if output is None:
                     return
                 completed.append(behavior)
-                if cycle == self.max_cycles:
-                    coder.io.tool_output(
-                        f"TDD: stopped at the {self.max_cycles}-cycle limit. "
-                        "The full intention may still need more work."
-                    )
-                    return
+                refactored = False
+                while True:
+                    decision = self.next_step(intention, completed, output, refactored)
+                    action = decision.get("action")
+                    if action != "refactor":
+                        break
+                    if refactored:
+                        coder.io.tool_output("TDD: stopped at the one-refactor-per-cycle limit.")
+                        return
+                    reason = decision.get("reason")
+                    if not isinstance(reason, str) or not reason.strip():
+                        coder.io.tool_error(
+                            "TDD: refactor needs an identified duplication or smell."
+                        )
+                        return
+                    output = self.run_refactor(intention, reason)
+                    if output is None:
+                        return
+                    refactored = True
 
-                decision = self.next_step(intention, completed, output)
-                action = decision.get("action")
                 if action == "done":
                     coder.io.tool_output(f"TDD: done. {decision.get('reason', '')}")
                     return
@@ -68,6 +86,13 @@ class TDDController:
                     question = decision.get("question", "")
                     coder.io.tool_output(f"TDD: clarification needed. {question}")
                     return
+                if action == "next" and cycle == self.max_cycles:
+                    coder.io.tool_output(
+                        f"TDD: stopped at the {self.max_cycles}-cycle limit. "
+                        "The full intention may still need more work."
+                    )
+                    return
+
                 behavior = decision.get("behavior")
                 if action != "next" or not isinstance(behavior, str) or not behavior.strip():
                     coder.io.tool_error("TDD: no next behavior selected; review before continuing.")
@@ -79,26 +104,20 @@ class TDDController:
 
     def run_cycle(self, intention, behavior):
         coder = self.coder
+        previous_test_count = self.test_count
         coder.io.tool_output("TDD: red — adding one test.")
-        coder.run(
-            f"TDD RED phase. Original intention: {intention}\n"
-            f"Selected behavior for this cycle: {behavior}\n"
-            "Add exactly one test for this next smallest behavior. Preserve all existing "
-            "tests and previously passing behavior. Follow the existing project test "
-            "conventions, including the test directory and discovery command. "
-            "You are authorized to create new test and production files. If no relevant "
-            "implementation exists, choose sensible filenames and create the new test "
-            "and its imported stub directly using your normal file-edit format. "
-            "Do not ask the user to create or add nonexistent files to the chat. "
-            "Read-only reference files must stay unchanged; they do not prevent you "
-            "from creating new files. Do not implement the behavior. If needed, add only "
-            "a minimal production stub so the test fails on an assertion rather than a "
-            "missing import or undefined function. Output each file exactly once. "
-            "Stop after this red step; the controller will run the tests.",
-            preproc=False,
-        )
+        if not RedProposal(coder).run(intention, behavior):
+            return
         red_response = coder.partial_response_content
         status, failure = self.run_tests()
+        if previous_test_count is not None and self.test_count is not None:
+            added = self.test_count - previous_test_count
+            if added != 1:
+                coder.io.tool_error(
+                    f"TDD: red added {added} tests ({previous_test_count} → {self.test_count}); "
+                    "exactly one new test is required. Review the test edits before continuing."
+                )
+                return
         if status == 0:
             coder.io.tool_error("TDD: the new test must fail before the green phase.")
             return
@@ -112,7 +131,10 @@ class TDDController:
                         "Review a TDD red step. Reply exactly TDD_RED_OK only if the test "
                         "output shows an assertion failing because the intended behavior "
                         "is missing. Syntax errors, missing imports, undefined names and "
-                        "environment errors do not qualify. Otherwise explain the problem. "
+                        "environment errors do not qualify. Check that the assertion exercises "
+                        "the actual production function imported from its module. A local "
+                        "definition or mock that shadows the function under test is not a valid "
+                        "red step, even if the assertion fails. Otherwise explain the problem. "
                         "Do not propose or output edits."
                     ),
                 },
@@ -146,8 +168,30 @@ class TDDController:
         coder.io.tool_output("TDD: green. One cycle complete.")
         return output or ""
 
-    def next_step(self, intention, completed, output):
-        self.coder.io.tool_output("TDD: deciding whether another behavior is needed.")
+    def run_refactor(self, intention, reason):
+        self.coder.io.tool_output(f"TDD: refactor — {reason}")
+        self.coder.run(
+            f"TDD REFACTOR phase. Original intention: {intention}\n"
+            f"Identified duplication or code smell: {reason}\n"
+            "The suite is green. Remove this duplication with the smallest appropriate "
+            "production-code refactoring. Repeated hardcoded answers in production duplicate "
+            "the examples in tests: replace them with a rule where appropriate. Generalizing "
+            "to remove duplication is allowed in this phase. Keep the concrete examples in "
+            "the tests. Do not modify tests or project configuration. Preserve the public API "
+            "and existing observable behavior; do not add unrelated behavior or abstractions. "
+            "Output each changed file exactly once. Stop after this refactor; the controller "
+            "will run the tests.",
+            preproc=False,
+        )
+        status, output = self.run_tests()
+        if status != 0:
+            self.coder.io.tool_error("TDD: refactor left the suite red; review before continuing.")
+            return
+        self.coder.io.tool_output("TDD: refactor complete; suite remains green.")
+        return output or ""
+
+    def next_step(self, intention, completed, output, refactored=False):
+        self.coder.io.tool_output("TDD: deciding the next move.")
         files = "\n\n".join(
             f"File: {name}\n{content}"
             for name, content in self.coder.get_abs_fnames_content()
@@ -158,12 +202,18 @@ class TDDController:
                     "role": "system",
                     "content": (
                         "Decide the next step after a passing TDD cycle. Review the original "
-                        "intention, actual code, tests and test output. A single passing example "
+                        "intention, actual code, tests and test output. First consider removing "
+                        "duplication: hardcoded answers in production may duplicate concrete "
+                        "examples in tests. Keep test examples and replace production answers "
+                        "with a rule when appropriate. Refactor only for an identified smell, "
+                        "preserving the public API and behavior. At most one refactor is "
+                        "allowed per green cycle. A single passing example "
                         "does not satisfy a request for general behavior. Select exactly one "
                         "uncovered concrete input/output example that should currently fail; "
                         "do not select an already covered or already implemented behavior. "
                         "Return only one JSON object, without markdown or edits: "
                         '{"action":"next","behavior":"one concrete example"}, '
+                        '{"action":"refactor","reason":"specific duplication to remove"}, '
                         '{"action":"done","reason":"why the full intention is satisfied"}, '
                         'or {"action":"clarify","question":"one focused question"}.'
                     ),
@@ -172,6 +222,7 @@ class TDDController:
                     "role": "user",
                     "content": (
                         f"Original intention: {intention}\nCompleted cycles: {completed}\n"
+                        f"Already refactored this cycle: {refactored}\n"
                         f"Latest passing test output:\n{output}\nCurrent files:\n{files}"
                     ),
                 },
@@ -187,8 +238,15 @@ class TDDController:
         return decision
 
     def run_tests(self):
-        return run_cmd(
+        result = run_cmd(
             self.coder.test_cmd,
             cwd=self.coder.root,
             error_print=self.coder.io.tool_error,
         )
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result[1] or "")
+        # Node's spec/TAP reporters and Python unittest expose an executed-test total.
+        counts = re.findall(r"(?m)^(?:ℹ|#)\s*tests\s+(\d+)\s*$", output)
+        if not counts:
+            counts = re.findall(r"(?m)^Ran (\d+) tests? in ", output)
+        self.test_count = int(counts[-1]) if counts else None
+        return result
