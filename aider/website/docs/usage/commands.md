@@ -57,6 +57,7 @@ cog.out(get_help_md())
 | **/run** | Run a shell command and optionally add the output to the chat (alias: !) |
 | **/save** | Save commands to a file that can reconstruct the current chat session's files |
 | **/settings** | Print out the current settings |
+| **/tdd** | Run one experimental red/green TDD cycle for an intention |
 | **/test** | Run a shell command and add the output to the chat on non-zero exit code |
 | **/think-tokens** | Set the thinking token budget, eg: 8096, 8k, 10.5k, 0.5M, or 0 to disable. |
 | **/tokens** | Report on the number of tokens used by the current chat context |

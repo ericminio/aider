@@ -990,6 +990,19 @@ class Commands:
 
         self.io.tool_output(combined_output)
 
+    def cmd_tdd(self, args):
+        "Run one experimental red/green TDD cycle for an intention"
+        from aider.tdd import TDDController
+
+        if not args.strip():
+            self.io.tool_error("Usage: /tdd <intention>")
+            return
+        if not isinstance(self.coder.test_cmd, str) or not self.coder.test_cmd.strip():
+            self.io.tool_error("TDD requires a test command; start aider with --test-cmd.")
+            return
+
+        TDDController(self.coder).run(args.strip())
+
     def cmd_test(self, args):
         "Run a shell command and add the output to the chat on non-zero exit code"
         if not args and self.coder.test_cmd:
