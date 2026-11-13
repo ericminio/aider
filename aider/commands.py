@@ -991,7 +991,7 @@ class Commands:
         self.io.tool_output(combined_output)
 
     def cmd_tdd(self, args):
-        "Run one experimental red/green TDD cycle for an intention"
+        "Run up to two experimental red/green TDD cycles for an intention"
         from aider.tdd import TDDController
 
         if not args.strip():

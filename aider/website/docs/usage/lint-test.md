@@ -76,17 +76,17 @@ using the `--test-cmd <test-command>` and
 
 ## Experimental TDD cycle
 
-This fork provides `/tdd <intention>` to perform one red/green cycle.
+This fork provides `/tdd <intention>` to perform up to two red/green cycles.
 Start aider with the project's test command and relevant files in context:
 
 ```bash
 aider-dev --read package.json --read src/__tests__/ready.test.js --test-cmd "npm test"
 ```
 
-Then give it one behavior to implement:
+Then give it an intention:
 
 ```text
-/tdd Return "9 = 3*3" for the prime decomposition of 9
+/tdd Create primeFactors(n) returning its prime decomposition, such as "9 = 3*3"
 ```
 
 The controller checks that the baseline passes, asks the model for exactly one
@@ -95,14 +95,22 @@ the real failure output. If the model judges it to be the intended assertion
 failure, the controller requests the smallest production change and runs the suite
 again. Each editing response should contain only one version of each file.
 
+After the first green, another model request reviews the original intention,
+current editable-file contents, tests and passing test output. It either selects
+one new concrete behavior, explains why the intention is complete, or asks a
+focused clarification question. The controller prints each cycle's selected
+behavior before requesting the next test. A second cycle starts only after the
+first suite passes. After two cycles it stops at the experiment's limit, without
+claiming the whole intention is complete.
+
 During the cycle, the controller temporarily disables automatic lint/test repair,
 commits and suggested shell commands so they do not skip over the red phase. It
 restores those settings afterward. Existing read-only files remain read-only;
 the red step can create a new test file and a minimal production stub.
 
-This first version stops after one cycle. Phase boundaries and failure assessment
-rely on model instructions and judgment. Automatic recovery, enforced file
-boundaries, multiple cycles, refactoring and PR delivery are future work. On an
+Phase boundaries, completion and failure assessment rely on model instructions
+and judgment. Automatic recovery, enforced file boundaries, longer runs,
+refactoring and PR delivery are future work. On an
 unexpected result, it stops and leaves the files available for inspection.
 
 ## Compiled languages
