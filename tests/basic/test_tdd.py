@@ -1,5 +1,6 @@
 import json
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -61,7 +62,11 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     coder.suggest_shell_commands = True
     coder.get_abs_fnames_content.return_value = [("calc.js", "return '9 = 3*3';")]
     events = []
-    results = iter([(0, "baseline passed"), (1, "Expected [] to equal [3, 3]"), (0, "passed")])
+    results = iter([
+        (0, "ℹ tests 1\nℹ fail 0\n"),
+        (1, "AssertionError [ERR_ASSERTION]: Expected [] to equal [3, 3]\nℹ tests 2\nℹ fail 1\n"),
+        (0, "passed"),
+    ])
 
     def run_tests(*args, **kwargs):
         assert args == ("npm test",)
@@ -86,9 +91,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
             events.append("decision")
             assert "return '9 = 3*3';" in messages[-1]["content"]
             return json.dumps(decision)
-        events.append("review")
-        assert "Expected [] to equal [3, 3]" in messages[-1]["content"]
-        return "TDD_RED_OK"
+        pytest.fail("Unexpected model call for red review")
 
     coder.main_model.simple_send_with_retries.side_effect = review
 
@@ -102,7 +105,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     ):
         TDDController(coder).run("Decompose 9 into prime factors")
 
-    assert events == ["tests", "edit", "tests", "review", "edit", "tests", "decision"]
+    assert events == ["tests", "edit", "tests", "edit", "tests", "decision"]
     green = coder.run.call_args.args[0]
     assert "Decompose 9 into prime factors" in green
     assert "Expected [] to equal [3, 3]" in green
@@ -114,6 +117,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     assert coder.suggest_shell_commands is True
     coder.io.tool_output.assert_any_call("TDD: green. One cycle complete.")
     coder.io.tool_output.assert_any_call(expected_message)
+    coder.io.tool_output.assert_any_call("TDD: finished — cycles completed: 1; cycles started: 1.")
 
 
 @pytest.mark.parametrize("summary", ["ℹ tests {count}", "# tests {count}"])
@@ -126,19 +130,193 @@ def test_red_with_three_new_tests_cannot_advance_to_green(summary):
     baseline = summary.format(count=1)
     red = "AssertionError\n" + summary.format(count=4)
     with (
-        patch("aider.tdd.run_cmd", side_effect=[(0, baseline), (1, red)]) as tests,
+        patch("aider.tdd.run_cmd", side_effect=[(0, baseline)] + [(1, red)] * 3) as tests,
         patch("aider.tdd.RedProposal.run", return_value=True),
     ):
         TDDController(coder).run("Prime decomposition as a string")
 
     # Only the red edit was requested; neither review nor green may accept the batch.
     assert coder.run.call_count == 0
-    assert tests.call_count == 2
+    assert tests.call_count == 4
     coder.main_model.simple_send_with_retries.assert_not_called()
-    coder.io.tool_error.assert_called_once_with(
-        "TDD: red added 3 tests (1 → 4); exactly one new test is required. "
-        "Review the test edits before continuing."
+    assert "red added 3 tests (1 → 4)" in coder.io.tool_error.call_args.args[0]
+    assert "after 3 attempts" in coder.io.tool_error.call_args.args[0]
+
+
+def test_undefined_test_function_is_repaired_before_green_without_a_model_review():
+    coder = Mock()
+    coder.test_cmd = "npm test"
+    output = (
+        "ReferenceError: test is not defined\n"
+        "✖ src/__tests__/primeFactors.test.js (180ms)\n"
+        "  'test failed'\nℹ tests 2\nℹ pass 1\nℹ fail 1\n"
     )
+    assertion = "AssertionError [ERR_ASSERTION]\nℹ tests 2\nℹ fail 1\n"
+    with (
+        patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
+        patch("aider.tdd.run_cmd", side_effect=[
+            (0, "ℹ tests 1\nℹ fail 0\n"), (1, output), (1, assertion), (0, "green")
+        ]),
+        patch.object(TDDController, "next_step", return_value={"action": "done", "reason": "Done"}),
+    ):
+        TDDController(coder).run("Prime decomposition")
+
+    assert proposals.call_count == 2
+    assert "ReferenceError: test is not defined" in proposals.call_args.kwargs["feedback"]
+    coder.run.assert_called_once()
+    assert assertion in coder.run.call_args.args[0]
+    coder.main_model.simple_send_with_retries.assert_not_called()
+    coder.io.tool_output.assert_any_call("TDD: finished — cycles completed: 1; cycles started: 1.")
+
+
+def test_assertion_red_can_advance_to_green_without_a_model_review():
+    coder = Mock()
+    coder.test_cmd = "npm test"
+    controller = TDDController(coder)
+    controller.test_count = 1
+    red_output = "AssertionError [ERR_ASSERTION]\nℹ tests 2\nℹ fail 1\nℹ cancelled 0\n"
+    green_output = "ℹ tests 2\nℹ fail 0\n"
+    with (
+        patch("aider.tdd.RedProposal.run", return_value=True),
+        patch("aider.tdd.run_cmd", side_effect=[(1, red_output), (0, green_output)]),
+    ):
+        assert controller.run_cycle("Prime decomposition", "9 = 3*3") == green_output
+
+    coder.run.assert_called_once()
+    coder.main_model.simple_send_with_retries.assert_not_called()
+
+
+def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for the red repair integration check")
+    with GitTemporaryDirectory():
+        ready = "import test from 'node:test';\ntest('ready', () => {});\n"
+        Path("ready.test.mjs").write_text(ready)
+        coder = Coder.create(
+            Model("gpt-3.5-turbo"), "whole",
+            io=InputOutput(yes=True, pretty=False, fancy_input=False),
+            read_only_fnames=["ready.test.mjs"],
+            test_cmd=f"{shlex.quote(node)} --test --test-reporter=tap",
+            auto_commits=False, map_tokens=0, stream=False,
+        )
+        coder.summarizer.max_tokens = 100000
+        results = []
+
+        def run_tests(*args, **kwargs):
+            result = run_cmd(*args, **kwargs)
+            results.append(result)
+            return result
+
+        def propose(messages):
+            imports = ["import { primeFactors } from './prime.mjs';"]
+            stubs = [{"path": "prime.mjs", "content": "export const primeFactors = () => '';"}]
+            if len(results) == 2:
+                assert "ReferenceError" in messages[-1]["content"]
+                assert Path("prime.mjs").read_text() == "export const primeFactors = () => '';\n"
+                imports += [
+                    "import test from 'node:test';", "import assert from 'node:assert/strict';"
+                ]
+                stubs = []
+            else:
+                assert len(results) == 1
+            return json.dumps({
+                "tests": [{
+                    "path": "prime.test.mjs", "imports": imports,
+                    "code": "test('nine', () => assert.equal(primeFactors(9), '9 = 3*3'));"
+                }],
+                "stubs": stubs,
+            })
+
+        def green(*args, **kwargs):
+            assert len(results) == 3
+            assert "ERR_ASSERTION" in results[-1][1]
+            coder.partial_response_content = (
+                "prime.mjs\n```javascript\nexport const primeFactors = () => '9 = 3*3';\n```\n"
+            )
+            coder.partial_response_function_call = {}
+            return []
+
+        with (
+            patch("aider.tdd.run_cmd", side_effect=run_tests),
+            patch.object(
+                coder.main_model, "simple_send_with_retries", side_effect=propose
+            ) as proposals,
+            patch.object(coder, "send", side_effect=green) as greens,
+            patch.object(
+                TDDController, "next_step", return_value={"action": "done", "reason": "Done"}
+            ),
+        ):
+            coder.run("/tdd Return 9 = 3*3 for input 9")
+
+        assert [result[0] for result in results] == [0, 1, 1, 0]
+        assert proposals.call_count == 2
+        assert greens.call_count == 1
+        assert Path("prime.test.mjs").read_text().count("test('nine'") == 1
+        assert Path("ready.test.mjs").read_text() == ready
+
+
+def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_production_edits():
+    coder = Mock()
+    coder.test_cmd = "npm test"
+    coder.get_abs_fnames_content.return_value = []
+    controller = TDDController(coder)
+    baseline = "ℹ tests 3\nℹ fail 0\n"
+    green = "ℹ tests 4\nℹ fail 0\n"
+    with (
+        patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
+        patch("aider.tdd.run_cmd", side_effect=[(0, baseline), (0, green)]),
+        patch.object(
+            coder.main_model, "simple_send_with_retries",
+            return_value=json.dumps({"action": "done", "reason": "Primes are covered"}),
+        ) as decisions,
+    ):
+        controller.run("Cover prime input 7")
+
+    proposals.assert_called_once()
+    coder.run.assert_not_called()
+    decisions.assert_called_once()
+    assert "Cover prime input 7" in decisions.call_args.args[0][-1]["content"]
+    assert "coverage" in decisions.call_args.args[0][-1]["content"].lower()
+    coder.io.tool_output.assert_any_call("TDD: finished — cycles completed: 1; cycles started: 1.")
+    coder.io.tool_output.assert_any_call("TDD: coverage-only cycles: 1.")
+
+
+def test_passing_experiment_returns_its_finding_to_completion_decision():
+    coder = Mock()
+    coder.test_cmd = "npm test"
+    coder.get_abs_fnames_content.return_value = [("prime.js", "// general factorization rule")]
+    calls = []
+
+    def decide(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps({
+                "action": "experiment", "question": "Does the rule handle prime inputs?",
+                "behavior": "primeFactors(7) returns '7 = 7'",
+            })
+        context = messages[-1]["content"]
+        assert "Does the rule handle prime inputs?" in context
+        assert "already green" in context.lower()
+        assert "without production changes" in context
+        return json.dumps({"action": "done", "reason": "The general rule handles primes too"})
+
+    with (
+        patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
+        patch("aider.tdd.run_cmd", side_effect=[
+            (0, "ℹ tests 1\nℹ fail 0\n"),
+            (0, "ℹ tests 2\nℹ fail 0\n"),
+            (0, "ℹ tests 3\nℹ fail 0\n"),
+        ]),
+        patch.object(coder.main_model, "simple_send_with_retries", side_effect=decide),
+    ):
+        TDDController(coder).run("Prime factorization as a string")
+
+    assert len(calls) == 2
+    assert proposals.call_count == 2
+    coder.run.assert_not_called()
+    coder.io.tool_output.assert_any_call("TDD: experiment — Does the rule handle prime inputs?")
+    coder.io.tool_output.assert_any_call("TDD: done. The general rule handles primes too")
 
 
 def test_default_budget_allows_a_third_cycle():
@@ -291,8 +469,7 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
                 if continue_cycle:
                     return json.dumps({"action": "next", "behavior": "double(3) == 6"})
                 return json.dumps({"action": "done", "reason": "Example implemented."})
-            assert statuses[-1] == 1
-            return "TDD_RED_OK"
+            pytest.fail("Unexpected model call for red review")
 
         with (
             patch.object(coder, "get_repo_map", return_value="test_ready.py: TestReady"),
@@ -315,9 +492,9 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
             assert "Do not modify tests" in refactor_prompt
         assert statuses == expected_statuses
         expected_edits = 2 if continue_cycle else 1
-        expected_calls = 6 if continue_cycle else 3
+        expected_calls = 4 if continue_cycle else 2
         if continue_cycle == "refactor":
-            expected_calls = 7
+            expected_calls = 5
             expected_edits = 3
         assert model_turns.call_count == expected_edits
         assert review.call_count == expected_calls

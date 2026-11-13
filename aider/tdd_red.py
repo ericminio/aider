@@ -11,8 +11,10 @@ class RedProposal:
 
     def __init__(self, coder):
         self.coder = coder
+        self.test_path = None
+        self.original_test_content = None
 
-    def run(self, intention, behavior):
+    def run(self, intention, behavior, feedback=None):
         coder = self.coder
         files = dict(coder.get_abs_fnames_content())
         for name in sorted(coder.abs_read_only_fnames):
@@ -53,6 +55,17 @@ class RedProposal:
                 ),
             },
         ]
+        if feedback:
+            messages[-1]["content"] += (
+                f"\nThe red gate rejected the current test:\n{feedback}\n"
+                f"Repair the SAME test in {self.test_path}. Return the one-test JSON proposal "
+                "again, with ALL imports needed by this test. The tool replaces your previous "
+                "proposal; it will not append another test. Preserve the intended behavior and "
+                "expected result. Fix test setup, imports or syntax so the real production "
+                "function is exercised and fails an assertion. Do not weaken the assertion or "
+                "implement production behavior. Return stubs: []; "
+                "production files must stay unchanged."
+            )
         for attempt in range(1, self.max_attempts + 1):
             coder.io.tool_output(f"TDD: red JSON proposal {attempt}/{self.max_attempts}.")
             response = coder.main_model.simple_send_with_retries(messages)
@@ -75,11 +88,17 @@ class RedProposal:
 
             # All collection and path validation happens before normal Aider edit approval.
             coder.io.tool_output("TDD: accepted a proposal containing one new test.")
+            test_path = edits[0][0]
+            full_path = Path(coder.root) / test_path
+            original = coder.io.read_text(str(full_path)) if full_path.exists() else ""
             approved = coder.prepare_to_edit(edits)
             if len(approved) != len(edits):
                 coder.io.tool_error("TDD: red proposal was not fully approved; stopping.")
                 return False
             WholeFileCoder.apply_edits(coder, approved)
+            if self.test_path is None:
+                self.test_path = test_path
+                self.original_test_content = original
             for path, _, _ in approved:
                 coder.io.tool_output(f"Applied edit to {path}")
                 coder.aider_edited_files.add(path)
@@ -105,13 +124,20 @@ class RedProposal:
         if not isinstance(test, dict):
             raise ValueError("The test must be an object with path, imports and code")
         path, full_path = self.validate_path(test.get("path"))
+        if self.test_path is not None and path != self.test_path:
+            raise ValueError(
+                f"Repair the existing proposal in {self.test_path}; do not create a new test"
+            )
         imports = test.get("imports", [])
         code = test.get("code")
         if not isinstance(imports, list) or any(not isinstance(line, str) for line in imports):
             raise ValueError("imports must be a list of strings")
         if not isinstance(code, str) or not code.strip():
             raise ValueError("code must contain the single new test definition")
-        existing = self.coder.io.read_text(str(full_path)) if full_path.exists() else ""
+        if self.test_path is not None:
+            existing = self.original_test_content
+        else:
+            existing = self.coder.io.read_text(str(full_path)) if full_path.exists() else ""
         if existing is None:
             raise ValueError(f"Cannot read {path}")
         missing = list(dict.fromkeys(line for line in imports if line not in existing.splitlines()))
@@ -126,6 +152,8 @@ class RedProposal:
         stubs = proposal.get("stubs", [])
         if not isinstance(stubs, list):
             raise ValueError("stubs must be a list")
+        if self.test_path is not None and stubs:
+            raise ValueError("A red repair may change only the proposed test; return stubs: []")
         paths = {full_path}
         for stub in stubs:
             if not isinstance(stub, dict):
@@ -141,8 +169,8 @@ class RedProposal:
         return edits
 
     def validate_path(self, path):
-        if not isinstance(path, str) or not path.strip() or Path(path).is_absolute():
-            raise ValueError("File paths must be relative to the repository")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("File paths must be non-empty strings")
         root = Path(self.coder.root).resolve()
         full_path = (root / path).resolve()
         if not full_path.is_relative_to(root) or full_path == root:
