@@ -1,5 +1,8 @@
+import ast
 import json
 from pathlib import Path
+
+from grep_ast.tsl import get_parser
 
 from aider.coders.wholefile_coder import WholeFileCoder
 
@@ -30,7 +33,10 @@ class RedProposal:
                     '"stubs":[{"path":"relative/source-file", "content":"minimal stub"}]}. '
                     "The tests collection must contain exactly one item. Each item represents "
                     "one test, not a whole test file or suite. Put only the new test definition "
-                    "in code; never repeat existing tests. Imports is a list of required import "
+                    "in code; never repeat existing tests. Give the test a unique descriptive "
+                    "name in its target file, "
+                    "including its specific input and expected behavior rather than repeating "
+                    "a generic title. Imports is a list of required import "
                     "lines; existing imports will be retained. The tool appends the new test "
                     "to its file. The test MUST exercise the actual production function. "
                     "Include its import from the production module in imports when absent. "
@@ -141,6 +147,7 @@ class RedProposal:
             existing = self.coder.io.read_text(str(full_path)) if full_path.exists() else ""
         if existing is None:
             raise ValueError(f"Cannot read {path}")
+        self.validate_unique_names(path, existing, code)
         missing = list(dict.fromkeys(line for line in imports if line not in existing.splitlines()))
         prefix = "\n".join(missing)
         if prefix:
@@ -168,6 +175,45 @@ class RedProposal:
             paths.add(full_path)
             edits.append((path, "block", (content.rstrip("\n") + "\n").splitlines(True)))
         return edits
+
+    def validate_unique_names(self, path, existing, code):
+        if Path(path).suffix not in (".js", ".mjs", ".cjs", ".jsx"):
+            return
+        seen = set(self.node_test_names(existing))
+        for name in self.node_test_names(code):
+            if name in seen:
+                raise ValueError(
+                    f"Duplicate test name {name!r} in {path}; choose a unique case-specific name"
+                )
+            seen.add(name)
+
+    def node_test_names(self, code):
+        root = get_parser("javascript").parse(code.encode("utf-8")).root_node
+        pending = [root]
+        names = []
+        functions = {"test", "it", "test.only", "test.skip", "test.todo", "it.only", "it.skip"}
+        while pending:
+            node = pending.pop()
+            pending.extend(reversed(node.named_children))
+            if node.type != "call_expression":
+                continue
+            function = node.child_by_field_name("function")
+            arguments = node.child_by_field_name("arguments")
+            if function is None or function.text.decode("utf-8") not in functions:
+                continue
+            if arguments is None or not arguments.named_children:
+                continue
+            title = arguments.named_children[0]
+            if title.type == "string":
+                try:
+                    names.append(ast.literal_eval(title.text.decode("utf-8")))
+                except (ValueError, SyntaxError):
+                    continue
+            elif title.type == "template_string" and not any(
+                child.type == "template_substitution" for child in title.named_children
+            ):
+                names.append(title.text.decode("utf-8")[1:-1])
+        return names
 
     def validate_path(self, path):
         if not isinstance(path, str) or not path.strip():

@@ -82,6 +82,36 @@ def test_rejected_multi_test_proposal_never_reaches_disk(tmp_path):
     assert not (tmp_path / "calc.js").exists()
 
 
+def test_duplicate_node_test_name_is_corrected_before_writing(tmp_path):
+    coder = Mock()
+    coder.root = str(tmp_path)
+    coder.io = InputOutput(yes=True, pretty=False, fancy_input=False)
+    coder.abs_read_only_fnames = set()
+    coder.get_abs_fnames_content.return_value = []
+    coder.cur_messages = []
+    coder.abs_root_path.side_effect = lambda path: str(tmp_path / path)
+    coder.prepare_to_edit.side_effect = lambda edits: edits
+    test_file = tmp_path / "prime.test.js"
+    original = "test('decomposes 9 as 3*3', () => {});\n"
+    test_file.write_text(original)
+    responses = iter(["decomposes 9 as 3*3", "decomposes 12 as 2*2*3"])
+
+    def answer(messages):
+        assert test_file.read_text() == original
+        if coder.main_model.simple_send_with_retries.call_count == 2:
+            assert "Duplicate test name" in messages[-1]["content"]
+        return json.dumps({"tests": [{
+            "path": "prime.test.js", "imports": [],
+            "code": f"test({json.dumps(next(responses))}, () => {{}});"
+        }]})
+
+    coder.main_model.simple_send_with_retries.side_effect = answer
+    assert RedProposal(coder).run("Prime factors", "12 = 2*2*3")
+    assert coder.main_model.simple_send_with_retries.call_count == 2
+    assert test_file.read_text().count("decomposes 9 as 3*3") == 1
+    assert test_file.read_text().count("decomposes 12 as 2*2*3") == 1
+
+
 def test_repair_replaces_the_proposed_test_and_preserves_earlier_tests(tmp_path):
     coder = Mock()
     coder.root = str(tmp_path)

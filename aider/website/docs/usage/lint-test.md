@@ -102,6 +102,10 @@ does not replace the existing test file. A rejected collection is sent back to t
 model for correction, with up to three proposals and no writes for rejected ones.
 Absolute paths that resolve inside the repository are normalized to relative
 paths automatically. Paths outside the repository and read-only files remain rejected.
+Test names should describe the specific case rather than reuse a generic title.
+For JavaScript files, static string names in direct `test`/`it` calls (including
+common modifiers) are checked against the target file before writing. Duplicate
+names trigger a corrected proposal; existing kata files are not renamed.
 This checks the collection size; it does not parse test definitions inside `code`.
 Node spec/TAP and unittest output counts provide an additional check after execution.
 The red gate classifies the real test output locally, without a model call. A
