@@ -116,7 +116,9 @@ Node, or `AssertionError` and one failure without errors for unittest). Syntax,
 import, undefined-name, cancelled-test and unrecognized failures cannot advance
 to green. This verifies an assertion failure, not whether the assertion correctly
 captures the user's intention. Once accepted, the controller requests the smallest
-production change and runs the suite again.
+production change and runs the suite again. Green changes should stay small and
+focused, preferring a simple rule over another hardcoded answer when that rule is
+a small change. Generality can grow incrementally from the tested examples.
 
 Every `/tdd` model call now requests a JSON object: red proposals and repairs,
 green production edits, refactors and repairs, and next-move decisions. Production
@@ -173,7 +175,11 @@ toward the budget.
 
 Red and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure
-output and up to two repair turns. If all three attempts fail, the controller
+output and up to two repair turns. Each repair receives the original green file
+contents and all earlier failed attempts in that refactor, including their diffs
+against green and corresponding test output. The latest candidate remains visible
+as the current files; the prompt asks the model to diagnose the failure rather
+than rebuild an earlier unsuccessful candidate. If all three attempts fail, the controller
 abandons that refactor and restores the exact file state from before its edits,
 including any uncommitted changes. Files created by that refactor are removed;
 the Git index and unrelated files are left alone. Restoration is verified by a

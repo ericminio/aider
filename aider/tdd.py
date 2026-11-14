@@ -1,3 +1,4 @@
+import difflib
 import json
 import re
 
@@ -180,9 +181,13 @@ class TDDController:
         if not EditProposal(coder).run(
             f"TDD GREEN phase. Original intention: {intention}\n"
             f"Selected behavior: {behavior}\nActual failing test output:\n{failure}\n"
-            "Make the smallest production-code change that passes this test and all "
-            "existing tests. Do not modify tests or project configuration. Do not generalize "
-            "for untested cases. Output each changed file exactly once. Stop after this "
+            "Make a small, focused production-code change that passes this test and all "
+            "existing tests. Prefer a simple rule that covers the tested examples over "
+            "adding another hardcoded answer when that rule is a small change. Let generality "
+            "grow incrementally from the examples; keep this step focused on the current "
+            "failing test rather than implementing the entire intention at once. "
+            "Do not modify tests or project configuration. "
+            "Output each changed file exactly once. Stop after this "
             "green step; the controller will run the tests."
         ):
             return
@@ -194,6 +199,8 @@ class TDDController:
 
     def run_refactor(self, intention, reason):
         self.coder.io.tool_output(f"TDD: refactor — {reason}")
+        original_files = dict(self.coder.get_abs_fnames_content())
+        failed_attempts = []
         prompt = (
             f"TDD REFACTOR phase. Original intention: {intention}\n"
             f"Identified duplication or code smell: {reason}\n"
@@ -213,6 +220,13 @@ class TDDController:
                 message = (
                     f"TDD REFACTOR REPAIR. Original intention: {intention}\n"
                     f"Refactor attempted: {reason}\n{feedback}\n"
+                    f"Pre-refactor green files:\n{json.dumps(original_files)}\n"
+                    "Previous failed refactor attempts (each diff is against the green files):\n"
+                    f"{json.dumps(failed_attempts)}\n"
+                    "These attempts failed and are not accepted solutions. Current files below "
+                    "contain the latest candidate. Compare the failed changes and their test "
+                    "results, identify what remains broken, and repair that cause rather than "
+                    "rebuilding an earlier unsuccessful candidate. "
                     "Fix the refactor so the existing suite is green again. Do not modify tests "
                     "or project configuration. Preserve the public API and existing behavior. "
                     "Keep the change small; do not add behavior or pursue another refactor. "
@@ -221,7 +235,23 @@ class TDDController:
             return EditProposal(self.coder).run(message)
 
         def evaluate(status, output):
-            return "the existing suite is red" if status != 0 else None
+            if status == 0:
+                return None
+            current_files = dict(self.coder.get_abs_fnames_content())
+            changes = "".join(
+                "".join(difflib.unified_diff(
+                    (original_files.get(name) or "").splitlines(keepends=True),
+                    (current_files.get(name) or "").splitlines(keepends=True),
+                    fromfile=f"green/{name}", tofile=f"candidate/{name}",
+                ))
+                for name in sorted(original_files.keys() | current_files.keys())
+            )
+            failed_attempts.append({
+                "attempt": len(failed_attempts) + 1,
+                "changes": changes,
+                "test_output": output,
+            })
+            return "the existing suite is red"
 
         with FileCheckpoint(self.coder) as checkpoint:
             result = PhaseLoop(self.coder.io, "refactor", self.max_refactor_attempts).run(

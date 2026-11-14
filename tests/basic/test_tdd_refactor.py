@@ -37,6 +37,7 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
         original_test = Path("test_calc.py").read_bytes()
         responses = iter([
             "def double(n):\n    return 0\n",
+            "def double(n):\n    return 1\n",
             "def double(n):\n    return n + n\n",
         ])
         statuses = []
@@ -46,6 +47,15 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
                 user_message = [m for m in messages if m["role"] == "user"][-1]["content"]
                 assert "0 != 4" in user_message
                 assert "Do not modify tests" in user_message
+                assert "Pre-refactor green files" in user_message
+                assert "return n * 2" in user_message
+                assert "Previous failed refactor attempts" in user_message
+                assert "+    return 0" in user_message
+                if len(statuses) == 2:
+                    assert "+    return 1" in user_message
+                    assert "1 != 4" in user_message
+                    assert '"attempt": 1' in user_message
+                    assert '"attempt": 2' in user_message
             return json.dumps({"files": [{"path": "calc.py", "content": next(responses)}]})
 
         def tests(*args, **kwargs):
@@ -60,8 +70,8 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
             output = TDDController(coder).run_refactor("Double numbers", "Simplify calculation")
 
         assert output is not None
-        assert statuses == [1, 0]
-        assert turns.call_count == 2
+        assert statuses == [1, 1, 0]
+        assert turns.call_count == 3
         assert "return n + n" in Path("calc.py").read_text()
         assert Path("test_calc.py").read_bytes() == original_test
 
