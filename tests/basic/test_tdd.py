@@ -115,7 +115,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     assert coder.auto_commits is True
     assert coder.dirty_commits is True
     assert coder.suggest_shell_commands is True
-    coder.io.tool_output.assert_any_call("TDD: green. One cycle complete.")
+    coder.io.tool_output.assert_any_call("TDD: green. Cycles completed: 1.")
     coder.io.tool_output.assert_any_call(expected_message)
     coder.io.tool_output.assert_any_call("TDD: finished — cycles completed: 1; cycles started: 1.")
 
@@ -339,6 +339,7 @@ def test_default_budget_allows_a_third_cycle():
 
     assert cycles.call_count == 3
     assert cycles.call_args.args == ("Double an integer", "double(4) == 8")
+    coder.io.tool_output.assert_any_call("TDD: green. Cycles completed: 3.")
     coder.io.tool_output.assert_any_call("TDD: done. Intention satisfied")
 
 

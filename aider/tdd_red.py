@@ -43,7 +43,8 @@ class RedProposal:
                     "edited. Stubs may create only NEW production files; use an empty list if "
                     "the implementation exists. A stub must make the test fail on its assertion, "
                     "not on an import or undefined name. Do not implement the behavior, add "
-                    "extra examples, or run commands. JSON string values must escape newlines."
+                    "extra examples, or run commands. Do not add comments to generated code, "
+                    "including tests, stubs and repairs. JSON string values must escape newlines."
                 ),
             },
             {

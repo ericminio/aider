@@ -42,6 +42,10 @@ class TDDController:
         try:
             # Prompt instances are shared by coders. Override only this session's copy.
             coder.gpt_prompts = copy.copy(original_prompts)
+            coder.gpt_prompts.main_system = (
+                f"{original_prompts.main_system}\n"
+                "Do not add comments to generated code, including stubs and repairs.\n"
+            )
             new_files_prompt = (
                 "No existing files are currently editable. Create new files needed for the "
                 "current TDD phase using the normal file-edit format. Choose paths consistent "
@@ -71,6 +75,8 @@ class TDDController:
                 if output is None:
                     return
                 completed.append(behavior)
+                outcome = "coverage already green" if self.last_cycle_was_coverage else "green"
+                coder.io.tool_output(f"TDD: {outcome}. Cycles completed: {len(completed)}.")
                 if experiment is not None:
                     finding = (
                         "already green: behavior confirmed without production changes"
@@ -199,7 +205,6 @@ class TDDController:
         if status != 0:
             coder.io.tool_error("TDD: suite is still red; review the output before continuing.")
             return
-        coder.io.tool_output("TDD: green. One cycle complete.")
         return output or ""
 
     def run_refactor(self, intention, reason):
