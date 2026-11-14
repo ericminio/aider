@@ -36,8 +36,8 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
         coder = make_coder()
         original_test = Path("test_calc.py").read_bytes()
         responses = iter([
-            "calc.py\n```python\ndef double(n):\n    return 0\n```\n",
-            "calc.py\n```python\ndef double(n):\n    return n + n\n```\n",
+            "def double(n):\n    return 0\n",
+            "def double(n):\n    return n + n\n",
         ])
         statuses = []
 
@@ -46,17 +46,16 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
                 user_message = [m for m in messages if m["role"] == "user"][-1]["content"]
                 assert "0 != 4" in user_message
                 assert "Do not modify tests" in user_message
-            coder.partial_response_content = next(responses)
-            coder.partial_response_function_call = {}
-            return []
+            return json.dumps({"files": [{"path": "calc.py", "content": next(responses)}]})
 
         def tests(*args, **kwargs):
             result = run_cmd(*args, **kwargs)
             statuses.append(result[0])
             return result
 
-        with patch.object(coder, "send", side_effect=send) as turns, patch(
-            "aider.tdd.run_cmd", side_effect=tests
+        with (
+            patch.object(coder.main_model, "simple_send_with_retries", side_effect=send) as turns,
+            patch("aider.tdd.run_cmd", side_effect=tests),
         ):
             output = TDDController(coder).run_refactor("Double numbers", "Simplify calculation")
 
@@ -77,20 +76,17 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
         Path("unrelated.txt").write_text("user's other work")
         statuses = []
 
-        def send(*args, **kwargs):
-            coder.partial_response_content = (
-                "calc.py\n```python\ndef double(n):\n    return 0\n```\n\n"
-                "helper.py\n```python\n# failed refactor helper\n```\n"
-            )
-            coder.partial_response_function_call = {}
-            return []
-
         def tests(*args, **kwargs):
             result = run_cmd(*args, **kwargs)
             statuses.append(result[0])
             return result
 
         def decide(messages):
+            if messages[0]["content"].startswith("TDD production edit"):
+                return json.dumps({"files": [
+                    {"path": "calc.py", "content": "def double(n):\n    return 0\n"},
+                    {"path": "helper.py", "content": "value = 0\n"},
+                ]})
             if not controller.refactor_history:
                 return json.dumps({"action": "refactor", "reason": "Extract a helper"})
             context = messages[-1]["content"]
@@ -99,11 +95,13 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
             assert "restored" in context.lower()
             assert "# user's uncommitted work" in context
             if cycles.call_count == 1:
-                return json.dumps({"action": "next", "behavior": "Double 3 to get 6"})
+                return json.dumps({
+                    "action": "next", "behavior": "Double 3 to get 6", "reason": "Missing three"
+                })
             return json.dumps({"action": "done", "reason": "Finished after abandoning refactor"})
 
         with (
-            patch.object(coder, "send", side_effect=send) as turns,
+            patch.object(coder, "send") as legacy_send,
             patch("aider.tdd.run_cmd", side_effect=tests),
             patch.object(
                 controller, "run_cycle", side_effect=["first green", "next green"]
@@ -113,7 +111,7 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
             controller.run("Double numbers")
 
         assert statuses == [0, 1, 1, 1, 0]
-        assert turns.call_count == 3
+        legacy_send.assert_not_called()
         assert cycles.call_count == 2
         assert cycles.call_args.args == ("Double numbers", "Double 3 to get 6")
         assert Path("calc.py").read_bytes() == original

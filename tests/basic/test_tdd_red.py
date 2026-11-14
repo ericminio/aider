@@ -40,6 +40,15 @@ def test_absolute_path_cannot_bypass_read_only_reference(tmp_path):
         RedProposal(coder).validate_path(str(reference))
 
 
+def test_absolute_path_missing_leading_slash_is_rejected(tmp_path):
+    coder = Mock()
+    coder.root = str(tmp_path)
+    coder.abs_read_only_fnames = set()
+    malformed = str(tmp_path / "src/calc.js").lstrip("/")
+    with pytest.raises(ValueError, match="leading slash"):
+        RedProposal(coder).validate_path(malformed)
+
+
 def test_rejected_multi_test_proposal_never_reaches_disk(tmp_path):
     coder = Mock()
     coder.root = str(tmp_path)

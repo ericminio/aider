@@ -1,10 +1,10 @@
 import ast
-import json
 from pathlib import Path
 
 from grep_ast.tsl import get_parser
 
 from aider.coders.wholefile_coder import WholeFileCoder
+from aider.tdd_json import parse_object
 
 
 class RedProposal:
@@ -119,10 +119,7 @@ class RedProposal:
         return False
 
     def get_edits(self, response):
-        try:
-            proposal = json.loads(response or "")
-        except (ValueError, TypeError) as err:
-            raise ValueError("Return valid JSON") from err
+        proposal = parse_object(response)
         if not isinstance(proposal, dict) or not isinstance(proposal.get("tests"), list):
             raise ValueError("Provide a tests collection")
         if len(proposal["tests"]) != 1:
@@ -219,6 +216,10 @@ class RedProposal:
         if not isinstance(path, str) or not path.strip():
             raise ValueError("File paths must be non-empty strings")
         root = Path(self.coder.root).resolve()
+        if not Path(path).is_absolute() and Path("/", path).resolve().is_relative_to(root):
+            raise ValueError(
+                "An absolute path is missing its leading slash; use a repository-relative path"
+            )
         full_path = (root / path).resolve()
         if not full_path.is_relative_to(root) or full_path == root:
             raise ValueError("File paths must stay within the repository")

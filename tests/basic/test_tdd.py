@@ -84,7 +84,9 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
         events.append("edit")
         coder.partial_response_content = "one test for prime factors of 9"
 
-    coder.run.side_effect = edit
+    def production(prompt):
+        edit(prompt, False)
+        return True
 
     def review(messages):
         if "Decide" in messages[0]["content"]:
@@ -102,11 +104,12 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     with (
         patch("aider.tdd.run_cmd", side_effect=run_tests),
         patch("aider.tdd.RedProposal.run", side_effect=red),
+        patch("aider.tdd.EditProposal.run", side_effect=production) as edits,
     ):
         TDDController(coder).run("Decompose 9 into prime factors")
 
     assert events == ["tests", "edit", "tests", "edit", "tests", "decision"]
-    green = coder.run.call_args.args[0]
+    green = edits.call_args.args[0]
     assert "Decompose 9 into prime factors" in green
     assert "Expected [] to equal [3, 3]" in green
     assert "Do not modify tests" in green
@@ -154,6 +157,7 @@ def test_undefined_test_function_is_repaired_before_green_without_a_model_review
     assertion = "AssertionError [ERR_ASSERTION]\nℹ tests 2\nℹ fail 1\n"
     with (
         patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
+        patch("aider.tdd.EditProposal.run", return_value=True) as edits,
         patch("aider.tdd.run_cmd", side_effect=[
             (0, "ℹ tests 1\nℹ fail 0\n"), (1, output), (1, assertion), (0, "green")
         ]),
@@ -163,8 +167,9 @@ def test_undefined_test_function_is_repaired_before_green_without_a_model_review
 
     assert proposals.call_count == 2
     assert "ReferenceError: test is not defined" in proposals.call_args.kwargs["feedback"]
-    coder.run.assert_called_once()
-    assert assertion in coder.run.call_args.args[0]
+    edits.assert_called_once()
+    assert assertion in edits.call_args.args[0]
+    coder.run.assert_not_called()
     coder.main_model.simple_send_with_retries.assert_not_called()
     coder.io.tool_output.assert_any_call("TDD: finished — cycles completed: 1; cycles started: 1.")
 
@@ -179,10 +184,12 @@ def test_assertion_red_can_advance_to_green_without_a_model_review():
     with (
         patch("aider.tdd.RedProposal.run", return_value=True),
         patch("aider.tdd.run_cmd", side_effect=[(1, red_output), (0, green_output)]),
+        patch("aider.tdd.EditProposal.run", return_value=True) as edits,
     ):
         assert controller.run_cycle("Prime decomposition", "9 = 3*3") == green_output
 
-    coder.run.assert_called_once()
+    edits.assert_called_once()
+    coder.run.assert_not_called()
     coder.main_model.simple_send_with_retries.assert_not_called()
 
 
@@ -209,6 +216,12 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
             return result
 
         def propose(messages):
+            if messages[0]["content"].startswith("TDD production edit"):
+                assert len(results) == 3
+                assert "ERR_ASSERTION" in results[-1][1]
+                return json.dumps({"files": [{
+                    "path": "prime.mjs", "content": "export const primeFactors = () => '9 = 3*3';\n"
+                }]})
             imports = ["import { primeFactors } from './prime.mjs';"]
             stubs = [{"path": "prime.mjs", "content": "export const primeFactors = () => '';"}]
             if len(results) == 2:
@@ -228,21 +241,12 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
                 "stubs": stubs,
             })
 
-        def green(*args, **kwargs):
-            assert len(results) == 3
-            assert "ERR_ASSERTION" in results[-1][1]
-            coder.partial_response_content = (
-                "prime.mjs\n```javascript\nexport const primeFactors = () => '9 = 3*3';\n```\n"
-            )
-            coder.partial_response_function_call = {}
-            return []
-
         with (
             patch("aider.tdd.run_cmd", side_effect=run_tests),
             patch.object(
                 coder.main_model, "simple_send_with_retries", side_effect=propose
             ) as proposals,
-            patch.object(coder, "send", side_effect=green) as greens,
+            patch.object(coder, "send") as legacy_send,
             patch.object(
                 TDDController, "next_step", return_value={"action": "done", "reason": "Done"}
             ),
@@ -250,8 +254,8 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
             coder.run("/tdd Return 9 = 3*3 for input 9")
 
         assert [result[0] for result in results] == [0, 1, 1, 0]
-        assert proposals.call_count == 2
-        assert greens.call_count == 1
+        assert proposals.call_count == 3
+        legacy_send.assert_not_called()
         assert Path("prime.test.mjs").read_text().count("test('nine'") == 1
         assert Path("ready.test.mjs").read_text() == ready
 
@@ -329,8 +333,8 @@ def test_default_budget_allows_a_third_cycle():
             controller,
             "next_step",
             side_effect=[
-                {"action": "next", "behavior": "double(3) == 6"},
-                {"action": "next", "behavior": "double(4) == 8"},
+                {"action": "next", "behavior": "double(3) == 6", "reason": "Check three"},
+                {"action": "next", "behavior": "double(4) == 8", "reason": "Check four"},
                 {"action": "done", "reason": "Intention satisfied"},
             ],
         ),
@@ -357,7 +361,7 @@ def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
             "next_step",
             side_effect=[
                 {"action": "refactor", "reason": "Remove the duplicated answer"},
-                {"action": "next", "behavior": "double(3) == 6"},
+                {"action": "next", "behavior": "double(3) == 6", "reason": "Check three"},
                 {"action": "done", "reason": "Intention satisfied"},
             ],
         ) as decisions,
@@ -369,6 +373,44 @@ def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
     refactor.assert_called_once_with("Double an integer", "Remove the duplicated answer")
     assert decisions.call_args_list[1].args[2:] == ("refactor green", True)
     assert decisions.call_args_list[2].args[2:] == ("second green", False)
+
+
+def test_two_refactors_can_complete_in_one_cycle_before_done():
+    coder = Mock()
+    controller = TDDController(coder)
+    with (
+        patch.object(controller, "run_tests", return_value=(0, "baseline")),
+        patch.object(controller, "run_cycle", return_value="green") as cycles,
+        patch.object(controller, "run_refactor", side_effect=["green one", "green two"]) as edits,
+        patch.object(controller, "next_step", side_effect=[
+            {"action": "refactor", "reason": "Remove hardcoded answers"},
+            {"action": "refactor", "reason": "Remove duplicated formatting"},
+            {"action": "done", "reason": "Generic rule and clean formatting"},
+        ]) as decisions,
+    ):
+        controller.run("Factor numbers")
+
+    assert cycles.call_count == 1
+    assert edits.call_count == 2
+    assert decisions.call_args.args[2:] == ("green two", 2)
+    coder.io.tool_output.assert_any_call("TDD: done. Generic rule and clean formatting")
+
+
+def test_repeated_refactor_decisions_are_bounded():
+    coder = Mock()
+    controller = TDDController(coder)
+    with (
+        patch.object(controller, "run_tests", return_value=(0, "baseline")),
+        patch.object(controller, "run_cycle", return_value="green"),
+        patch.object(controller, "run_refactor", return_value="green") as edits,
+        patch.object(controller, "next_step", return_value={
+            "action": "refactor", "reason": "Simplify further"
+        }),
+    ):
+        controller.run("Factor numbers")
+
+    assert edits.call_count == 3
+    coder.io.tool_output.assert_any_call("TDD: stopped at the 3-refactors-per-cycle limit.")
 
 
 @pytest.mark.parametrize("continue_cycle", [False, True, "refactor"])
@@ -392,24 +434,16 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
         )
         coder.summarizer.max_tokens = 100000
         original_prompts = coder.gpt_prompts
-        responses = [
-            "calc.py\n```python\ndef double(n):\n    return 4\n```\n",
-        ]
+        responses = ["def double(n):\n    return 4\n"]
         if continue_cycle:
-            responses += [
-                "calc.py\n```python\ndef double(n):\n"
-                "    if n == 3:\n        return 6\n    return 4\n```\n"
-                if continue_cycle == "refactor"
-                else "calc.py\n```python\ndef double(n):\n    return n * 2\n```\n",
-            ]
+            responses.append(
+                "def double(n):\n    if n == 3:\n        return 6\n    return 4\n"
+                if continue_cycle == "refactor" else "def double(n):\n    return n * 2\n"
+            )
         if continue_cycle == "refactor":
-            responses += ["calc.py\n```python\ndef double(n):\n    return n * 2\n```\n"]
+            responses.append("def double(n):\n    return n * 2\n")
         responses = iter(responses)
-
-        def send(*args, **kwargs):
-            coder.partial_response_content = next(responses)
-            coder.partial_response_function_call = {}
-            return []
+        production_turns = []
 
         statuses = []
         tests_before_refactor = []
@@ -421,6 +455,9 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
             return result
 
         def review_or_decide(messages):
+            if messages[0]["content"].startswith("TDD production edit"):
+                production_turns.append(messages)
+                return json.dumps({"files": [{"path": "calc.py", "content": next(responses)}]})
             if messages[0]["content"].startswith("TDD RED proposal"):
                 assert "Double an integer" in messages[-1]["content"]
                 assert "test_ready.py" in messages[-1]["content"]
@@ -460,7 +497,9 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
                         return json.dumps(
                             {"action": "refactor", "reason": "Replace duplicated example answers"}
                         )
-                    return json.dumps({"action": "next", "behavior": "double(4) == 8"})
+                    return json.dumps({
+                        "action": "next", "behavior": "double(4) == 8", "reason": "Check four"
+                    })
                 if len(statuses) == 6:
                     assert "return n * 2" in messages[-1]["content"]
                     return json.dumps({"action": "done", "reason": "Duplication removed."})
@@ -468,13 +507,15 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
                 assert "return 4" in messages[-1]["content"]
                 assert "self.assertEqual(double(2), 4)" in messages[-1]["content"]
                 if continue_cycle:
-                    return json.dumps({"action": "next", "behavior": "double(3) == 6"})
+                    return json.dumps({
+                        "action": "next", "behavior": "double(3) == 6", "reason": "Check three"
+                    })
                 return json.dumps({"action": "done", "reason": "Example implemented."})
             pytest.fail("Unexpected model call for red review")
 
         with (
             patch.object(coder, "get_repo_map", return_value="test_ready.py: TestReady"),
-            patch.object(coder, "send", side_effect=send) as model_turns,
+            patch.object(coder, "send") as model_turns,
             patch.object(
                 coder.main_model, "simple_send_with_retries", side_effect=review_or_decide
             ) as review,
@@ -487,7 +528,7 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
             expected_statuses += [0]
             assert Path("test_calc.py").read_text() == tests_before_refactor[0]
             refactor_prompt = [
-                m for m in model_turns.call_args.args[0] if m["role"] == "user"
+                m for m in production_turns[-1] if m["role"] == "user"
             ][-1]["content"]
             assert "Replace duplicated example answers" in refactor_prompt
             assert "Do not modify tests" in refactor_prompt
@@ -497,8 +538,9 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
         if continue_cycle == "refactor":
             expected_calls = 5
             expected_edits = 3
-        assert model_turns.call_count == expected_edits
-        assert review.call_count == expected_calls
+        model_turns.assert_not_called()
+        assert len(production_turns) == expected_edits
+        assert review.call_count == expected_calls + expected_edits
         expected_return = "n * 2" if continue_cycle else "4"
         assert Path("calc.py").read_text() == f"def double(n):\n    return {expected_return}\n"
         assert "self.assertEqual(double(2), 4)" in Path("test_calc.py").read_text()

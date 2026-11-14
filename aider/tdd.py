@@ -1,9 +1,10 @@
-import copy
 import json
 import re
 
 from aider.run_cmd import run_cmd
 from aider.tdd_checkpoint import FileCheckpoint
+from aider.tdd_edit import EditProposal
+from aider.tdd_json import request_json
 from aider.tdd_phase import PhaseLoop
 from aider.tdd_red import RedProposal
 from aider.tdd_test_output import assertion_red_error
@@ -15,6 +16,7 @@ class TDDController:
     max_cycles = 10
     max_red_attempts = 3
     max_refactor_attempts = 3
+    max_refactors_per_cycle = 3
 
     def __init__(self, coder, max_cycles=None):
         self.coder = coder
@@ -30,7 +32,6 @@ class TDDController:
 
     def run(self, intention):
         coder = self.coder
-        original_prompts = coder.gpt_prompts
         settings = {
             name: getattr(coder, name)
             for name in (
@@ -40,24 +41,6 @@ class TDDController:
         completed = []
         started = 0
         try:
-            # Prompt instances are shared by coders. Override only this session's copy.
-            coder.gpt_prompts = copy.copy(original_prompts)
-            coder.gpt_prompts.main_system = (
-                f"{original_prompts.main_system}\n"
-                "Do not add comments to generated code, including stubs and repairs.\n"
-            )
-            new_files_prompt = (
-                "No existing files are currently editable. Create new files needed for the "
-                "current TDD phase using the normal file-edit format. Choose paths consistent "
-                "with the read-only examples and test discovery command. Existing read-only "
-                "files must remain unchanged. If an existing file needs editing, ask to add "
-                "that file; do not ask to add files that do not exist yet."
-            )
-            coder.gpt_prompts.files_no_full_files = new_files_prompt
-            coder.gpt_prompts.files_no_full_files_with_repo_map = new_files_prompt
-            coder.gpt_prompts.files_no_full_files_with_repo_map_reply = (
-                "I will create the new files required for this TDD phase."
-            )
             for name in settings:
                 setattr(coder, name, False)
             coder.io.tool_output("TDD: checking the green baseline.")
@@ -87,14 +70,17 @@ class TDDController:
                         "question": experiment, "behavior": behavior, "finding": finding
                     })
                     coder.io.tool_output(f"TDD: experiment finding — {finding}.")
-                refactored = False
+                refactored = 0
                 while True:
                     decision = self.next_step(intention, completed, output, refactored)
                     action = decision.get("action")
                     if action != "refactor":
                         break
-                    if refactored:
-                        coder.io.tool_output("TDD: stopped at the one-refactor-per-cycle limit.")
+                    if refactored >= self.max_refactors_per_cycle:
+                        coder.io.tool_output(
+                            f"TDD: stopped at the {self.max_refactors_per_cycle}"
+                            "-refactors-per-cycle limit."
+                        )
                         return
                     reason = decision.get("reason")
                     if not isinstance(reason, str) or not reason.strip():
@@ -105,7 +91,7 @@ class TDDController:
                     output = self.run_refactor(intention, reason)
                     if output is None:
                         return
-                    refactored = True
+                    refactored += 1
 
                 if action == "done":
                     coder.io.tool_output(f"TDD: done. {decision.get('reason', '')}")
@@ -137,7 +123,6 @@ class TDDController:
                         return
                     coder.io.tool_output(f"TDD: experiment — {experiment}")
         finally:
-            coder.gpt_prompts = original_prompts
             for name, value in settings.items():
                 setattr(coder, name, value)
             coder.io.tool_output(
@@ -192,15 +177,15 @@ class TDDController:
             return result.output or ""
 
         coder.io.tool_output("TDD: green — implementing the smallest change.")
-        coder.run(
+        if not EditProposal(coder).run(
             f"TDD GREEN phase. Original intention: {intention}\n"
             f"Selected behavior: {behavior}\nActual failing test output:\n{failure}\n"
             "Make the smallest production-code change that passes this test and all "
             "existing tests. Do not modify tests or project configuration. Do not generalize "
             "for untested cases. Output each changed file exactly once. Stop after this "
-            "green step; the controller will run the tests.",
-            preproc=False,
-        )
+            "green step; the controller will run the tests."
+        ):
+            return
         status, output = self.run_tests()
         if status != 0:
             coder.io.tool_error("TDD: suite is still red; review the output before continuing.")
@@ -233,8 +218,7 @@ class TDDController:
                     "Keep the change small; do not add behavior or pursue another refactor. "
                     "Output each changed file exactly once, then stop for the controller's tests."
                 )
-            self.coder.run(message, preproc=False)
-            return True
+            return EditProposal(self.coder).run(message)
 
         def evaluate(status, output):
             return "the existing suite is red" if status != 0 else None
@@ -278,72 +262,83 @@ class TDDController:
             )
             return output or ""
 
-    def next_step(self, intention, completed, output, refactored=False):
+    def next_step(self, intention, completed, output, refactored=0):
         self.coder.io.tool_output("TDD: deciding the next move.")
         files = "\n\n".join(
             f"File: {name}\n{content}"
             for name, content in self.coder.get_abs_fnames_content()
         )
-        response = self.coder.main_model.simple_send_with_retries(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Decide the next step after a passing TDD cycle. Review the original "
-                        "intention, actual code, tests, experiment findings and test output. "
-                        "Inspect production code for nongeneric pieces: branches tied to example "
-                        "inputs, hardcoded answers, duplication or incomplete rules. Treat these "
-                        "as suspicious evidence to investigate, not automatic proof of missing "
-                        "behavior. Guards, validation, base cases and legitimate domain-specific "
-                        "rules are often nongeneric and may be correct. Explain their role "
-                        "against the intention before deciding to change them. "
-                        "Choose next only for a concrete missing behavior, explaining from the "
-                        "code why its example should fail. If unsure, choose experiment with "
-                        "a specific question and concrete input/output example to resolve it. "
-                        "A passing experiment resolves that uncertainty and is evidence toward "
-                        "done; do not keep adding examples merely because possibilities remain. "
-                        "Choose done when code and evidence satisfy the original intention, "
-                        "explaining why relevant rules and guards are legitimate. Do not invent "
-                        "requirements for unspecified inputs. Choose clarify if a missing "
-                        "requirement matters. Refactor only to remove an identified smell, "
-                        "preserving the public API and behavior. Keep test examples and replace "
-                        "duplicated production answers with a rule where appropriate. At most "
-                        "one refactor is allowed per green cycle. Review abandoned refactors: "
-                        "their changes were rolled back. Do not immediately repeat the same "
-                        "failed refactor; choose a different next move. A general requirement "
-                        "needs a general rule, not just a hardcoded example answer. "
-                        "An experiment may pass after generalization and becomes coverage. "
-                        "Do not repeat already covered examples or force a passing test to fail. "
-                        "Return only one JSON object, without markdown or edits: "
-                        '{"action":"next","behavior":"one concrete example",'
-                        '"reason":"code evidence of missing behavior"}, '
-                        '{"action":"experiment","question":"specific uncertainty",'
-                        '"behavior":"one concrete input/output example"}, '
-                        '{"action":"refactor","reason":"specific duplication to remove"}, '
-                        '{"action":"done","reason":"why the full intention is satisfied"}, '
-                        'or {"action":"clarify","question":"one focused question"}.'
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Original intention: {intention}\nCompleted cycles: {completed}\n"
-                        f"Already refactored this cycle: {refactored}\n"
-                        f"Refactor history: {json.dumps(self.refactor_history)}\n"
-                        f"Already-green coverage examples: {json.dumps(self.coverage_history)}\n"
-                        f"Experiment findings: {json.dumps(self.experiment_history)}\n"
-                        f"Latest passing test output:\n{output}\nCurrent files:\n{files}"
-                    ),
-                },
-            ]
-        )
-        try:
-            decision = json.loads(response or "")
-        except (ValueError, TypeError):
-            decision = None
-        if not isinstance(decision, dict):
-            self.coder.io.tool_error("TDD: could not read the next-step decision; stopping.")
-            return {}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Decide the next step after a passing TDD cycle. Review the original "
+                    "intention, actual code, tests, experiment findings and test output. "
+                    "Inspect production code for nongeneric pieces: branches tied to example "
+                    "inputs, hardcoded answers, duplication or incomplete rules. Treat these "
+                    "as suspicious evidence to investigate, not automatic proof of missing "
+                    "behavior. Guards, validation, base cases and legitimate domain-specific "
+                    "rules are often nongeneric and may be correct. Explain their role "
+                    "against the intention before deciding to change them. "
+                    "Choose next only for a concrete missing behavior, explaining from the "
+                    "code why its example should fail. If unsure, choose experiment with "
+                    "a specific question and concrete input/output example to resolve it. "
+                    "A passing experiment resolves that uncertainty and is evidence toward "
+                    "done; do not keep adding examples merely because possibilities remain. "
+                    "Choose done when code and evidence satisfy the original intention, "
+                    "explaining why relevant rules and guards are legitimate. Do not invent "
+                    "requirements for unspecified inputs. Choose clarify if a missing "
+                    "requirement matters. Refactor only to remove an identified smell, "
+                    "preserving the public API and behavior. Keep test examples and replace "
+                    "duplicated production answers with a rule where appropriate. Further "
+                    "small refactors may follow, each verified green, within the remaining "
+                    "refactor budget. Review abandoned refactors: "
+                    "their changes were rolled back. Do not immediately repeat the same "
+                    "failed refactor; choose a different next move. A general requirement "
+                    "needs a general rule, not just a hardcoded example answer. "
+                    "An experiment may pass after generalization and becomes coverage. "
+                    "Do not repeat already covered examples or force a passing test to fail. "
+                    "Return only one JSON object, without markdown or edits: "
+                    '{"action":"next","behavior":"one concrete example",'
+                    '"reason":"code evidence of missing behavior"}, '
+                    '{"action":"experiment","question":"specific uncertainty",'
+                    '"behavior":"one concrete input/output example"}, '
+                    '{"action":"refactor","reason":"specific duplication to remove"}, '
+                    '{"action":"done","reason":"why the full intention is satisfied"}, '
+                    'or {"action":"clarify","question":"one focused question"}.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Original intention: {intention}\nCompleted cycles: {completed}\n"
+                    f"Refactors attempted this cycle: {refactored}\n"
+                    f"Remaining refactor budget: {self.max_refactors_per_cycle - refactored}\n"
+                    f"Refactor history: {json.dumps(self.refactor_history)}\n"
+                    f"Already-green coverage examples: {json.dumps(self.coverage_history)}\n"
+                    f"Experiment findings: {json.dumps(self.experiment_history)}\n"
+                    f"Latest passing test output:\n{output}\nCurrent files:\n{files}"
+                ),
+            },
+        ]
+        return request_json(
+            self.coder, messages, self.validate_decision, "next move"
+        ) or {}
+
+    def validate_decision(self, decision):
+        fields = {
+            "next": ("behavior", "reason"),
+            "experiment": ("behavior", "question"),
+            "refactor": ("reason",),
+            "done": ("reason",),
+            "clarify": ("question",),
+        }
+        action = decision.get("action")
+        if not isinstance(action, str) or action not in fields:
+            raise ValueError("Choose next, experiment, refactor, done or clarify")
+        for field in fields[action]:
+            if not isinstance(decision.get(field), str) or not decision[field].strip():
+                raise ValueError(f"Decision {action} needs a nonempty {field}")
         return decision
 
     def run_tests(self):

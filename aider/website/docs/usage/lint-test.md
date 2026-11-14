@@ -101,7 +101,9 @@ The controller adds any missing import lines and appends that one test; the mode
 does not replace the existing test file. A rejected collection is sent back to the
 model for correction, with up to three proposals and no writes for rejected ones.
 Absolute paths that resolve inside the repository are normalized to relative
-paths automatically. Paths outside the repository and read-only files remain rejected.
+paths automatically. A path that repeats the absolute repository path without its
+leading slash is rejected for correction, preventing accidental nested `Users/...`
+copies. Paths outside the repository and read-only files remain rejected.
 Test names should describe the specific case rather than reuse a generic title.
 For JavaScript files, static string names in direct `test`/`it` calls (including
 common modifiers) are checked against the target file before writing. Duplicate
@@ -114,8 +116,20 @@ Node, or `AssertionError` and one failure without errors for unittest). Syntax,
 import, undefined-name, cancelled-test and unrecognized failures cannot advance
 to green. This verifies an assertion failure, not whether the assertion correctly
 captures the user's intention. Once accepted, the controller requests the smallest
-production change and runs the suite again. Each editing response should contain
-only one version of each file.
+production change and runs the suite again.
+
+Every `/tdd` model call now requests a JSON object: red proposals and repairs,
+green production edits, refactors and repairs, and next-move decisions. Production
+edits use `{"files":[{"path":"relative/source-file","content":"complete final content"}]}`.
+The controller validates the entire collection before applying it. Duplicate file
+paths (including aliases), duplicate JSON keys, test-file edits and read-only or
+outside-repository paths are rejected. Each file contains one final version; the
+whole-file markdown parser is not used for TDD responses. Next-move decisions
+also require the fields for their chosen action. Invalid JSON or an invalid
+proposal triggers a correction request, up to three responses, without applying
+rejected edits. This uses prompts plus local validation and retries, rather than
+provider-enforced structured generation. Ordinary Aider chat keeps its configured
+edit format.
 
 If exactly one new test is discovered and the entire suite already passes, the
 controller keeps the new test as coverage and skips the green production edit.
@@ -150,6 +164,12 @@ hardcoded production answers may duplicate the examples in tests. A refactor can
 replace those answers with a rule while keeping the tests and public API unchanged.
 It uses a separate model turn and real test run, then the controller decides again
 using the updated code and test output.
+
+The controller allows up to three refactors per cycle, checking the suite after
+each and asking for the next move again. Refactors do not consume red/green
+cycles. The next-move model receives the remaining refactor budget; a fourth
+refactor request stops the run at that limit. Abandoned refactors also count
+toward the budget.
 
 Red and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure

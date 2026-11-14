@@ -1,0 +1,45 @@
+import json
+
+
+def parse_object(response):
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(response or "", object_pairs_hook=unique_keys)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"Return one valid JSON object: {err}") from err
+    if not isinstance(value, dict):
+        raise ValueError("Return one JSON object")
+    return value
+
+
+def request_json(coder, messages, validate, label, max_attempts=3):
+    messages = [dict(message) for message in messages]
+    messages[0]["content"] += " Return only JSON, without markdown fences or surrounding prose."
+    for attempt in range(1, max_attempts + 1):
+        coder.io.tool_output(f"TDD: {label} JSON response {attempt}/{max_attempts}.")
+        response = coder.main_model.simple_send_with_retries(messages)
+        try:
+            return validate(parse_object(response))
+        except ValueError as err:
+            coder.io.tool_output(f"TDD: rejected {label} before applying changes: {err}")
+            messages += [
+                {"role": "assistant", "content": response or ""},
+                {"role": "user", "content": f"Rejected: {err}. Return a corrected JSON object. "
+                 "No changes from this rejected response were applied."},
+            ]
+    coder.io.tool_error(f"TDD: no valid {label} JSON after {max_attempts} attempts.")
+    return None
+
+
+def file_context(coder):
+    files = dict(coder.get_abs_fnames_content())
+    for name in sorted(coder.abs_read_only_fnames):
+        files[f"{name} (read-only)"] = coder.io.read_text(name)
+    return "\n\n".join(f"File: {name}\n{content}" for name, content in files.items())
