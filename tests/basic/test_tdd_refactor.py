@@ -2,7 +2,7 @@ import json
 import shlex
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -37,6 +37,88 @@ def make_coder():
     )
     coder.summarizer.max_tokens = 100000
     return coder
+
+
+@pytest.mark.parametrize("first_response", [None, '{"action": "refactor",\nBROKEN_JSON'])
+def test_refactoring_prompt_logs_raw_proposals_before_validation(tmp_path, capsys, first_response):
+    history = tmp_path / "chat.md"
+    coder = Mock()
+    coder.root = str(tmp_path)
+    coder.io = InputOutput(
+        yes=True, pretty=False, fancy_input=False, chat_history_file=str(history)
+    )
+    coder.io.console.width = 2000
+    coder.abs_read_only_fnames = set()
+    source = "def double(n):\n    return n * 2\n"
+    (tmp_path / "calc.py").write_text(source)
+    coder.get_abs_fnames_content.return_value = [("calc.py", source)]
+    rejected = json.dumps(
+        {
+            "action": "refactor",
+            "kind": "simplification",
+            "reason": "Name the calculated product",
+            "preserves": "Keep the doubled result",
+            "evidence": [{"path": "calc.py", "fragment": "return n * 2"}],
+            "changes": [
+                {"path": "calc.py", "before": "missing_product()", "after": "calculated_product()"}
+            ],
+        }
+    )
+    completed = json.dumps({"action": "complete", "reason": "No useful refactor remains"})
+    coder.main_model.simple_send_with_retries.side_effect = [first_response, rejected, completed]
+    controller = TDDController(coder)
+    validate = controller.validate_refactor_decision
+
+    def validate_logged(proposal):
+        raw = rejected if proposal["action"] == "refactor" else completed
+        assert raw in history.read_text()
+        return validate(proposal)
+
+    with patch.object(controller, "validate_refactor_decision", side_effect=validate_logged):
+        assert controller.refactor_step("Double numbers", [], "green")["action"] == "complete"
+
+    log = history.read_text()
+    terminal = capsys.readouterr().out
+    for output in (log, terminal):
+        for attempt in range(1, 4):
+            assert f"TDD: refactoring proposal {attempt}/3:" in output
+        for fragment in (first_response or "<empty response>").splitlines():
+            assert fragment in output
+        assert "missing_product()" in output
+        assert "calculated_product()" in output
+        assert "No useful refactor remains" in output
+        assert output.index("missing_product()") < output.index("before must match exactly")
+    assert (tmp_path / "calc.py").read_text() == source
+    coder.prepare_to_edit.assert_not_called()
+
+
+def test_refactor_edit_logs_rejected_production_proposal(capsys):
+    with GitTemporaryDirectory():
+        coder = make_coder()
+        history = Path("chat.md").resolve()
+        coder.io.chat_history_file = history
+        coder.io.console.width = 2000
+        tests = Path("test_calc.py").read_bytes()
+        rejected = json.dumps(
+            {"files": [{"path": "test_calc.py", "content": "erase_assertions()"}]}
+        )
+        accepted = json.dumps(
+            {"files": [{"path": "calc.py", "content": "def double(n):\n    return n + n\n"}]}
+        )
+        with patch.object(
+            coder.main_model, "simple_send_with_retries", side_effect=[rejected, accepted]
+        ):
+            assert (
+                TDDController(coder).run_refactor("Double numbers", "Simplify calculation")
+                is not None
+            )
+        for output in (history.read_text(), capsys.readouterr().out):
+            assert "TDD: production edit proposal 1/3:" in output
+            assert "erase_assertions()" in output
+            assert output.index("erase_assertions()") < output.index(
+                "Production phases cannot edit tests"
+            )
+        assert Path("test_calc.py").read_bytes() == tests
 
 
 def test_failed_refactor_is_repaired_before_returning_to_next_step():

@@ -440,7 +440,7 @@ def test_refactor_review_rejects_behavior_selection(premature_action):
     assert decision == {"action": "complete", "reason": "No useful duplication remains"}
     assert coder.main_model.simple_send_with_retries.call_count == 2
     messages = coder.main_model.simple_send_with_retries.call_args.args[0]
-    assert "Compare tests and production for repeated" in messages[0]["content"]
+    assert "removes repeated knowledge" in messages[0]["content"]
     assert "return 4;" in messages[1]["content"]
     assert "Choose refactor or complete" in messages[-1]["content"]
 

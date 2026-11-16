@@ -41,6 +41,9 @@ class RefactorCandidates:
                 f"Production edit exceeds the {self.max_changed_lines}-line small-change budget "
                 f"({changed} added/deleted nonblank lines). Choose a smaller production change."
             )
+        self.check_failed(edits)
+
+    def check_failed(self, edits):
         failure = self.failed.get(self.state(edits))
         if failure is not None:
             raise ValueError(

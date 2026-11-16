@@ -171,43 +171,39 @@ leaving production files unchanged. There are up to three execution attempts
 gate accepts an assertion failure. If repairs are exhausted, it stops and leaves
 the latest files for inspection. JSON-format retries remain a separate limit.
 
-After each green, the first model request asks what small refactoring can remove
-duplication now. It inspects production code and tests, including hardcoded
-production answers that duplicate test examples. A `refactor` JSON response
-contains a concrete reason, `kind` (`duplication` or `simplification`), `preserves`
-(why tested behavior is preserved), source `evidence`, and a `changes` collection.
-Each evidence item contains `path` and `fragment`, an exact unique quote from
-current context. Duplication needs two distinct, nonoverlapping source occurrences;
-simplification needs one. Read-only references are available in every phase.
-These checks ground the explanation in real source; they cannot prove its meaning.
-Duplication proposals also name `duplicate`, an exact source string present in
-every citation. The proposed production transformation must reduce its occurrence
-count. Extracting a calculation that appears only once into a variable does not
-satisfy this rule. Rejection feedback asks the reviewer to reassess the idea and
-choose `complete` when no grounded improvement remains.
-Simplification plans must reduce total non-whitespace production source length.
-This conservative check excludes expansions and equivalent style preferences;
-shorter text alone does not prove simpler semantics.
-Each
-change contains a repository-relative `path`, an exact `before` fragment that
-occurs once in the current file, and its `after` replacement. Aider validates and
-applies these transformations directly; a separate model does not reinterpret
-the initial plan. Absent or ambiguous fragments and unchanged plans are rejected
-before writing. If no useful refactoring remains, the reviewer returns `complete`
-with a reason. `complete` ends the refactoring phase, not the overall intention. Guards, base
-cases and algorithm seeds may remain specific when legitimate. Refactoring should
-remove one small piece of duplication supported by the current examples, rather
-than introduce a complete algorithm for untested cases. A broken suite prompts
-repairs to reconsider the size of the step and reduce toward the green baseline
-when appropriate.
+After each green, the refactoring prompt asks for one small, behavior-preserving
+change that removes repeated knowledge or makes the existing implementation easier
+to understand. It asks for the relevant source and a concrete benefit. Missing
+behavior belongs to the next test. If no worthwhile refactoring remains, the model
+returns `complete`, which ends this phase only.
 
-The complete candidate, including repairs, may add/delete at most twelve nonblank
-lines relative to its pre-refactor green baseline, summed across files. This is
-a deliberately conservative size budget, not a semantic definition of refactoring.
-Large changes must be split into smaller steps. A compact rewrite can still be
-too ambitious; evaluating that remains a model judgment. No useful refactor is a
-normal outcome, and the prompts explicitly discourage filling the budget or
-introducing a full algorithm for untested categories.
+The task instruction and JSON response contract are described separately. A
+`refactor` response contains `kind` (`duplication` or `simplification`), `reason`,
+`preserves` (why behavior is preserved), source `evidence`, and `changes`. Each
+evidence item has `path` and `fragment`, an exact unique quote from current context.
+Repeated knowledge needs at least two distinct, nonoverlapping citations;
+simplification needs one. The citations need not contain the same literal string.
+Read-only references are available in every phase.
+
+Each change contains a repository-relative `path`, an exact `before` fragment that
+occurs once in the current file, and its `after` replacement. Aider validates and
+applies these transformations directly. Absent or ambiguous fragments and unchanged
+plans are rejected before writing. Evidence and exact matching ground the proposal
+in current source; they do not prove that it is a useful refactoring or preserves
+behavior. Test verification, repair and rollback provide execution checks.
+
+Refactoring is not required to reduce literal counts or source length, and it has
+no line-count limit. Naming an intermediate result or expanding a dense expression
+can be useful even when it adds text. Smallness and benefit remain review judgments.
+The remaining refactor budget is omitted from model context; the controller still
+bounds the number of attempts. The green phase retains its separate size budget.
+
+Every refactoring proposal is printed in full before parsing or validation, with
+its attempt number. This includes malformed JSON, rejected plans and `complete`
+decisions. Refactor production-edit and repair responses are logged before
+validation too. The terminal and chat-history file retain the proposal followed by
+its rejection reason, so rejected `before`/`after` fragments remain inspectable.
+Empty responses are explicitly identified. Logging does not apply rejected edits.
 
 Test refactoring is disabled. Aider cancels proposals naming conventional test
 paths before requesting edits, records the cancellation, and asks for another

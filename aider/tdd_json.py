@@ -51,12 +51,17 @@ def parse_object(response):
     return value
 
 
-def request_json(coder, messages, validate, label, max_attempts=3):
+def request_json(coder, messages, validate, label, max_attempts=3, log_response=False):
     messages = [dict(message) for message in messages]
     messages[0]["content"] += " Return only JSON, without markdown fences or surrounding prose."
     for attempt in range(1, max_attempts + 1):
         coder.io.tool_output(f"TDD: {label} JSON response {attempt}/{max_attempts}.")
         response = coder.main_model.simple_send_with_retries(messages, json_mode=True)
+        if log_response:
+            coder.io.tool_output(
+                f"TDD: {label} proposal {attempt}/{max_attempts}:\n"
+                + str(response if response else "<empty response>")
+            )
         try:
             return validate(parse_object(response))
         except ValueError as err:
@@ -64,7 +69,7 @@ def request_json(coder, messages, validate, label, max_attempts=3):
             reassess = (
                 " Reassess whether a useful refactor exists; choose complete if no grounded "
                 "improvement remains, rather than invent evidence for the rejected idea."
-                if label == "refactor review"
+                if label == "refactoring"
                 else ""
             )
             messages += [

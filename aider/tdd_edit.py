@@ -7,9 +7,10 @@ from aider.tdd_red import RedProposal
 
 
 class EditProposal:
-    def __init__(self, coder, validate_candidate=None):
+    def __init__(self, coder, validate_candidate=None, log_response=False):
         self.coder = coder
         self.validate_candidate = validate_candidate
+        self.log_response = log_response
 
     def run(self, prompt):
         coder = self.coder
@@ -26,7 +27,9 @@ class EditProposal:
             },
             {"role": "user", "content": f"{prompt}\nCurrent files:\n{file_context(coder)}"},
         ]
-        edits = request_json(coder, messages, self.get_edits, "production edit")
+        edits = request_json(
+            coder, messages, self.get_edits, "production edit", log_response=self.log_response
+        )
         if edits is None:
             return False
         return self.apply(edits)

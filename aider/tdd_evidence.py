@@ -40,31 +40,3 @@ def validate_string_list(decision, field):
     ):
         raise ValueError(f"{field} must be a list of nonempty strings (or [])")
     return values
-
-
-def validate_duplication(coder, decision, proposed):
-    duplicate = decision.get("duplicate")
-    if not isinstance(duplicate, str) or not duplicate.strip():
-        raise ValueError("Duplication evidence needs duplicate: the exact repeated source string")
-    if any(duplicate not in item["fragment"] for item in decision["evidence"]):
-        raise ValueError("The exact duplicate must occur in every cited evidence fragment")
-    before = after = 0
-    for file in proposed:
-        original = coder.io.read_text(str(Path(coder.root) / file["path"]))
-        before += original.count(duplicate)
-        after += file["content"].count(duplicate)
-    if after >= before:
-        raise ValueError("A duplication refactor must reduce occurrences of the exact duplicate")
-
-
-def validate_simplification(coder, proposed):
-    before = after = 0
-    for file in proposed:
-        original = coder.io.read_text(str(Path(coder.root) / file["path"]))
-        before += len("".join(original.split()))
-        after += len("".join(file["content"].split()))
-    if after >= before:
-        raise ValueError(
-            "A simplification must reduce non-whitespace production source. "
-            "Choose complete for equivalent style preferences without a concrete reduction."
-        )

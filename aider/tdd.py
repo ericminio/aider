@@ -5,12 +5,7 @@ import re
 from aider.run_cmd import run_cmd
 from aider.tdd_checkpoint import FileCheckpoint
 from aider.tdd_edit import EditProposal
-from aider.tdd_evidence import (
-    validate_duplication,
-    validate_evidence,
-    validate_simplification,
-    validate_string_list,
-)
+from aider.tdd_evidence import validate_evidence, validate_string_list
 from aider.tdd_json import file_context, request_json
 from aider.tdd_phase import PhaseLoop
 from aider.tdd_red import RedProposal
@@ -245,16 +240,17 @@ class TDDController:
         failed_attempts = []
         prompt = (
             f"TDD REFACTOR phase. Original intention: {intention}\n"
-            f"Identified duplication or code smell: {reason}\n"
-            "Remove this duplication in one small production change supported by the "
-            "tested examples. Preserve behavior and the public API. Do not modify tests "
+            f"Identified refactoring: {reason}\n"
+            "Apply this one small, behavior-preserving production change. "
+            "Preserve the public API. Do not modify tests "
             "or project configuration."
         )
 
         def propose(feedback):
             editor = EditProposal(
                 self.coder,
-                lambda edits: self.refactor_candidates.check(edits, baseline=original_files),
+                self.refactor_candidates.check_failed,
+                log_response=True,
             )
             if feedback is None and changes is not None:
                 files = self.refactor_candidates.plan(changes)
@@ -347,52 +343,47 @@ class TDDController:
         files = file_context(self.coder)
         return (
             f"Original intention: {intention}\nCompleted cycles: {completed}\n"
-            f"Refactors attempted this cycle: {refactored}\n"
-            f"Remaining refactor budget: {self.max_refactors_per_cycle - refactored}\n"
             f"Refactor history: {json.dumps(self.refactor_history)}\n"
             f"Already-green coverage examples: {json.dumps(self.coverage_history)}\n"
             f"Latest passing test output:\n{output}\nCurrent files:\n{files}"
         )
 
     def refactor_step(self, intention, completed, output, refactored=0):
-        self.coder.io.tool_output("TDD: looking for the next duplication to remove.")
+        self.coder.io.tool_output("TDD: considering refactoring.")
+        refactoring_prompt = (
+            "Review refactoring after green. Inspect the current tests and production code. "
+            "Identify one small, behavior-preserving change that removes repeated knowledge "
+            "or makes the existing implementation easier to understand. Cite the relevant "
+            "source and explain the benefit. Preserve the public API and leave tests and "
+            "configuration unchanged. Missing behavior belongs to the next test. "
+            "If no worthwhile refactor remains, return complete."
+        )
+        response_contract = (
+            "Response contract:\nReturn JSON with action refactor, kind (duplication or "
+            "simplification), reason (the concrete benefit), preserves (why behavior is "
+            "preserved), evidence, and changes. Each evidence item has path and fragment, "
+            "an exact unique quote from current context. Cite at least two distinct "
+            "occurrences for repeated knowledge, or one for simplification. Each change "
+            "has path (repository-relative), before (one unique current source fragment), "
+            "and after (its replacement). Aider applies these exact changes directly.\n"
+            "Otherwise return action complete and reason. Complete ends the refactoring "
+            "phase only."
+        )
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Review refactoring after green. Compare tests and production for repeated "
-                    "knowledge, including example values copied into production. No useful "
-                    "refactor is a normal outcome; do not invent duplication to fill the budget. "
-                    "Remove one small duplication or simplify production; leave tests unchanged. "
-                    "Do not introduce a full algorithm for untested categories. Guards, base "
-                    "cases and algorithm seeds may be legitimate. Use exact current source "
-                    "fragments and their replacement. Aider applies these changes directly.\n"
-                    "Return JSON with action refactor, kind (duplication or simplification), "
-                    "reason (the repeated knowledge or unnecessary complexity), preserves "
-                    "(why the tested behavior is preserved), evidence, and changes. "
-                    "Each evidence item has path and fragment, an exact unique source quote "
-                    "from current context. Duplication needs at least two distinct occurrences; "
-                    "also supply duplicate, the exact repeated source string present in every "
-                    "citation. The edit must reduce its occurrences in production. "
-                    "Simplification needs one citation and must reduce non-whitespace source. "
-                    "Equivalent style preferences are not a useful refactor. "
-                    "Moving a single calculation to a "
-                    "variable is not duplication removal. Explain the concrete benefit. "
-                    "At most 12 added/deleted nonblank lines across all files, including repairs. "
-                    "Each change has "
-                    "path (repository-relative), before (one unique current fragment), and "
-                    "after (its replacement). Supply actual strings.\n"
-                    "If no useful change remains, return action complete and a reason. "
-                    "Complete ends this phase only."
-                ),
-            },
+            {"role": "system", "content": f"{refactoring_prompt}\n\n{response_contract}"},
             {
                 "role": "user",
                 "content": self.decision_context(intention, completed, output, refactored),
             },
         ]
         return (
-            request_json(self.coder, messages, self.validate_refactor_decision, "refactor review")
+            request_json(
+                self.coder,
+                messages,
+                self.validate_refactor_decision,
+                "refactoring",
+                log_response=True,
+            )
             or {}
         )
 
@@ -456,13 +447,9 @@ class TDDController:
             raise ValueError("Refactor kind must be duplication or simplification")
         validate_evidence(self.coder, decision.get("evidence"), 2 if kind == "duplication" else 1)
         if not isinstance(decision.get("preserves"), str) or not decision["preserves"].strip():
-            raise ValueError("Refactor needs preserves explaining why tested behavior is preserved")
+            raise ValueError("Refactor needs preserves explaining why behavior is preserved")
         proposed = self.refactor_candidates.plan(changes)
-        if kind == "duplication":
-            validate_duplication(self.coder, decision, proposed)
-        else:
-            validate_simplification(self.coder, proposed)
-        editor = EditProposal(self.coder, self.refactor_candidates.check)
+        editor = EditProposal(self.coder, self.refactor_candidates.check_failed)
         edits = editor.get_edits({"files": proposed})
         return dict(decision, files=[path for path, _, _ in edits])
 

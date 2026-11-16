@@ -1,5 +1,7 @@
 import json
-from unittest.mock import Mock, patch
+import shlex
+import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -132,7 +134,6 @@ def refactor_proposal():
         "kind": "duplication",
         "reason": "The answer is copied",
         "preserves": "The expression still produces 9 = 3*3 for the tested input",
-        "duplicate": "'9 = 3*3'",
         "evidence": [
             {"path": "prime.js", "fragment": "'9 = 3*3'"},
             {"path": "prime.test.js", "fragment": "'9 = 3*3'"},
@@ -159,23 +160,51 @@ def test_invented_or_reused_duplication_evidence_is_rejected(tmp_path, bad_evide
     assert (tmp_path / "prime.js").read_text().count("'9 = 3*3'") == 1
 
 
-def test_large_algorithm_cannot_be_smuggled_through_refactoring_or_repair(tmp_path):
-    coder = factor_context(tmp_path)
-    proposal = refactor_proposal()
-    replacement = "\n".join(f"  const factor{i} = n / {i + 1};" for i in range(15))
-    proposal["changes"] = [
-        {"path": "prime.js", "before": coder.get_abs_fnames_content()[0][1], "after": replacement}
-    ]
-    controller = TDDController(coder)
-    with pytest.raises(ValueError, match="small-change"):
-        controller.validate_refactor_decision(proposal)
-    coder.main_model.simple_send_with_retries.return_value = json.dumps(
-        {"files": [{"path": "prime.js", "content": replacement}]}
+def test_refactor_and_repair_allow_larger_readable_formatting(tmp_path):
+    coder = context_coder(tmp_path)
+    target = tmp_path / "sequences.py"
+    source = "def numbers():\n    return [" + ", ".join(map(str, range(1, 16))) + "]\n"
+    replacement = (
+        "def numbers():\n    result = [\n"
+        + "".join(f"        {value},\n" for value in range(1, 16))
+        + "    ]\n    return result\n"
     )
-    with patch("aider.tdd.run_cmd", return_value=(0, "green")) as tests:
-        controller.run_refactor("Prime factors", "Remove copied answer")
-    coder.prepare_to_edit.assert_not_called()
-    assert tests.call_count == 1  # Only verify the restored green checkpoint.
+    target.write_text(source)
+    (tmp_path / "test_sequences.py").write_text(
+        "import unittest\nfrom sequences import numbers\n"
+        "class NumbersTest(unittest.TestCase):\n"
+        "    def test_numbers(self):\n"
+        "        self.assertEqual(numbers(), list(range(1, 16)))\n"
+    )
+    coder.abs_fnames = {str(target)}
+    coder.abs_root_path.side_effect = lambda path: str(tmp_path / path)
+    coder.prepare_to_edit.side_effect = lambda edits: edits
+    coder.get_abs_fnames_content.side_effect = lambda: [(str(target), target.read_text())]
+    coder.test_cmd = f"{shlex.quote(sys.executable)} -B -m unittest discover"
+    controller = TDDController(coder)
+    proposal = {
+        "action": "refactor",
+        "kind": "simplification",
+        "reason": "Name and format the sequence",
+        "preserves": "The same ordered numbers are returned",
+        "evidence": [{"path": "sequences.py", "fragment": source}],
+        "changes": [{"path": "sequences.py", "before": source, "after": replacement}],
+    }
+    accepted = controller.validate_refactor_decision(proposal)
+    assert (
+        controller.run_refactor("Return the sequence", accepted["reason"], accepted["changes"])
+        is not None
+    )
+    assert target.read_text() == replacement
+    # Full-file refactor repairs use the same permissive candidate gate.
+    target.write_text(source)
+    coder.main_model.simple_send_with_retries.return_value = json.dumps(
+        {
+            "files": [{"path": "sequences.py", "content": replacement}],
+        }
+    )
+    assert controller.run_refactor("Return the sequence", accepted["reason"]) is not None
+    assert target.read_text() == replacement
 
 
 def test_completion_requires_test_evidence_and_discloses_assumptions(tmp_path):
@@ -202,7 +231,7 @@ def test_completion_requires_test_evidence_and_discloses_assumptions(tmp_path):
         controller.validate_decision(decision)
 
 
-def test_refactor_repairs_cannot_accumulate_changes_across_files(tmp_path):
+def test_green_repairs_cannot_accumulate_changes_across_files(tmp_path):
     coder = context_coder(tmp_path)
     original = "\n".join(f"const x{i} = 0;" for i in range(5))
     changed = original.replace("= 0", "= 1")
@@ -214,22 +243,30 @@ def test_refactor_repairs_cannot_accumulate_changes_across_files(tmp_path):
         )
 
 
-def test_duplication_plan_must_reduce_the_cited_repetition(tmp_path):
-    coder = factor_context(tmp_path)
-    proposal = refactor_proposal()
-    proposal["duplicate"] = "'9 = 3*3'"
-    proposal["changes"] = [
-        {
-            "path": "prime.js",
-            "before": "return '9 = 3*3';",
-            "after": "const result = '9 = 3*3'; return result;",
-        }
+def test_duplication_can_describe_knowledge_expressed_differently(tmp_path):
+    coder = context_coder(tmp_path)
+    source = "def double(n):\n    return 2 + 2\n"
+    (tmp_path / "calc.py").write_text(source)
+    coder.get_abs_fnames_content.return_value = [
+        ("calc.py", source),
+        ("test_calc.py", "self.assertEqual(double(2), 4)"),
     ]
-    with pytest.raises(ValueError, match="reduce"):
-        TDDController(coder).validate_refactor_decision(proposal)
+    decision = {
+        "action": "refactor",
+        "kind": "duplication",
+        "reason": "Both expressions encode doubling two",
+        "preserves": "For the tested input two, n * 2 still produces four",
+        "evidence": [
+            {"path": "calc.py", "fragment": "2 + 2"},
+            {"path": "test_calc.py", "fragment": "double(2), 4"},
+        ],
+        "changes": [{"path": "calc.py", "before": "2 + 2", "after": "n * 2"}],
+    }
+    assert TDDController(coder).validate_refactor_decision(decision)["action"] == "refactor"
+    assert (tmp_path / "calc.py").read_text() == source
 
 
-def test_simplification_cannot_expand_a_single_calculation(tmp_path):
+def test_simplification_may_name_an_intermediate_result(tmp_path):
     coder = factor_context(tmp_path)
     proposal = refactor_proposal()
     proposal["kind"] = "simplification"
@@ -241,8 +278,7 @@ def test_simplification_cannot_expand_a_single_calculation(tmp_path):
             "after": "const result = '9 = 3*3'; return result;",
         }
     ]
-    with pytest.raises(ValueError, match="simplification must reduce"):
-        TDDController(coder).validate_refactor_decision(proposal)
+    assert TDDController(coder).validate_refactor_decision(proposal)["action"] == "refactor"
 
 
 def test_next_selection_can_request_already_passing_coverage(tmp_path):
@@ -262,3 +298,23 @@ def test_next_selection_can_request_already_passing_coverage(tmp_path):
 
     coder.main_model.simple_send_with_retries.side_effect = choose
     assert TDDController(coder).next_step("Prime factors", [], "green")["action"] == "next"
+
+
+def test_refactoring_prompt_separates_judgment_from_contract_without_a_quota(tmp_path):
+    coder = factor_context(tmp_path)
+    coder.main_model.simple_send_with_retries.return_value = json.dumps(
+        {
+            "action": "complete",
+            "reason": "The existing implementation is clear",
+        }
+    )
+    TDDController(coder).refactor_step("Prime factors", [], "green", refactored=2)
+    messages = coder.main_model.simple_send_with_retries.call_args.args[0]
+    prompt, context = messages[0]["content"], messages[1]["content"]
+    assert "repeated knowledge" in prompt
+    assert "Missing behavior belongs to the next test" in prompt
+    assert "Response contract:" in prompt
+    assert "Remaining refactor budget" not in context
+    assert "Refactors attempted this cycle" not in context
+    assert "non-whitespace" not in prompt
+    assert "12" not in prompt
