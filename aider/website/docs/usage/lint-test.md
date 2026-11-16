@@ -119,6 +119,14 @@ production change and runs the suite again. Green changes should stay small and
 focused, preferring a simple rule over another hardcoded answer when that rule is
 a small change. Generality can grow incrementally from the tested examples.
 
+If the first production edit leaves the suite red, green gets up to two repair
+turns using the actual failure output and current files. Repairs retain the
+accepted test as the contract and use the same production-only validation as the
+initial edit. They must diagnose the failure and make a small correction rather
+than weaken tests or broaden the implementation. Exhausted or unapproved green
+repairs stop the controller without a completion claim; the latest files remain
+available for inspection.
+
 Every `/tdd` model call now requests a JSON object: red proposals and repairs,
 green production edits, refactors and repairs, and next-move decisions. Production
 edits use `{"files":[{"path":"relative/source-file","content":"complete final content"}]}`.
@@ -234,7 +242,7 @@ For repeatable evaluation with real models, see `benchmark/TDD.md`. The harness
 checks example selection, coverage selection, unnecessary refactoring and an
 end-to-end kata against an independent oracle, retaining model responses and logs.
 
-Red and refactor share the same bounded propose/test/evaluate/repair loop, with
+Red, green and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure
 output and up to two repair turns. Each repair receives the original green file
 contents and all earlier failed attempts in that refactor, including their diffs
@@ -272,7 +280,7 @@ restores those settings afterward. Existing read-only files remain read-only;
 the red step can create a new test file and a minimal production stub.
 
 Phase boundaries and completion still rely on model instructions and judgment;
-assertion-failure classification is deterministic. Green-phase repair, enforced
+assertion-failure classification is deterministic. Enforced
 file boundaries and PR delivery are future work. Other unexpected results stop
 the controller and leave the files available for inspection.
 

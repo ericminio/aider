@@ -23,6 +23,7 @@ class TDDController:
 
     max_cycles = 10
     max_red_attempts = 3
+    max_green_attempts = 3
     max_refactor_attempts = 3
     max_refactors_per_cycle = 3
 
@@ -193,19 +194,38 @@ class TDDController:
             return result.output or ""
 
         coder.io.tool_output("TDD: green — implementing the smallest change.")
-        if not EditProposal(coder).run(
+        prompt = (
             f"TDD GREEN phase. Original intention: {intention}\n"
             f"Selected behavior: {behavior}\nActual failing test output:\n{failure}\n"
             "Pass the failing test with a small production change. Prefer a simple rule "
             "over another hardcoded answer when it is a small step. Let generality grow "
             "from the tested examples. Do not modify tests or project configuration."
-        ):
+        )
+
+        def implement(feedback):
+            message = prompt
+            if feedback is not None:
+                message += (
+                    "\nTDD GREEN REPAIR. The accepted test remains the contract. "
+                    "Diagnose the production failure using the actual test output below. "
+                    "Repair its cause in the smallest step; do not broaden the implementation. "
+                    "Do not modify tests or project configuration.\n"
+                    + feedback
+                )
+            return EditProposal(coder).run(message)
+
+        result = PhaseLoop(coder.io, "green", self.max_green_attempts).run(
+            implement,
+            self.run_tests,
+            lambda status, output: None if status == 0 else "the existing suite is red",
+        )
+        if not result.accepted:
+            coder.io.tool_error(
+                "TDD: green repairs exhausted or unapproved; suite not verified green. "
+                "Review the latest files and test output before continuing."
+            )
             return
-        status, output = self.run_tests()
-        if status != 0:
-            coder.io.tool_error("TDD: suite is still red; review the output before continuing.")
-            return
-        return output or ""
+        return result.output or ""
 
     def run_refactor(self, intention, reason, changes=None):
         self.coder.io.tool_output(f"TDD: refactor — {reason}")
