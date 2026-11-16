@@ -126,6 +126,11 @@ initial edit. They must diagnose the failure and make a small correction rather
 than weaken tests or broaden the implementation. Exhausted or unapproved green
 repairs stop the controller without a completion claim; the latest files remain
 available for inspection.
+Green candidates, including repairs across files, share the twelve-line
+added/deleted nonblank-line budget against the accepted red files. A hardcoded
+first example is permitted; one example should not cause an untested algorithm
+rewrite. Identical previously failed production states are rejected before
+writing or retesting, and the correction request includes the prior failure.
 
 Every `/tdd` model call now requests a JSON object: red proposals and repairs,
 green production edits, refactors and repairs, and next-move decisions. Production

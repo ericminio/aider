@@ -18,6 +18,7 @@ from aider.utils import GitTemporaryDirectory
 
 def test_tdd_command_starts_one_cycle_with_the_users_intention():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     commands = Commands(Mock(), coder)
@@ -31,6 +32,7 @@ def test_tdd_command_starts_one_cycle_with_the_users_intention():
 
 def test_tdd_command_accepts_a_custom_cycle_budget():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     commands = Commands(Mock(), coder)
@@ -62,6 +64,7 @@ def test_tdd_command_accepts_a_custom_cycle_budget():
 )
 def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision, expected_message):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     coder.test_cmd = "npm test"
@@ -150,6 +153,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
 @pytest.mark.parametrize("summary", ["ℹ tests {count}", "# tests {count}"])
 def test_red_with_three_new_tests_cannot_advance_to_green(summary):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     coder.get_abs_fnames_content.return_value = []
@@ -173,6 +177,7 @@ def test_red_with_three_new_tests_cannot_advance_to_green(summary):
 
 def test_undefined_test_function_is_repaired_before_green_without_a_model_review():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     output = (
@@ -208,6 +213,7 @@ def test_undefined_test_function_is_repaired_before_green_without_a_model_review
 
 def test_assertion_red_can_advance_to_green_without_a_model_review():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     controller = TDDController(coder)
@@ -313,6 +319,7 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
 
 def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_production_edits(tmp_path):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     coder.get_abs_fnames_content.return_value = []
@@ -362,6 +369,7 @@ def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_productio
 @pytest.mark.parametrize("removed_action", ["experiment", "clarify", "refactor", "complete"])
 def test_removed_decision_is_rejected_before_starting_another_cycle(removed_action, tmp_path):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
     controller = TDDController(coder)
@@ -419,6 +427,7 @@ def test_removed_decision_is_rejected_before_starting_another_cycle(removed_acti
 @pytest.mark.parametrize("premature_action", ["next", "done"])
 def test_refactor_review_rejects_behavior_selection(premature_action):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = [("calc.js", "return 4;")]
     coder.main_model.simple_send_with_retries.side_effect = [
@@ -438,6 +447,7 @@ def test_refactor_review_rejects_behavior_selection(premature_action):
 
 def test_default_budget_allows_a_third_cycle():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
@@ -468,6 +478,7 @@ def test_default_budget_allows_a_third_cycle():
 
 def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
@@ -505,6 +516,7 @@ def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
 
 def test_two_refactors_can_complete_in_one_cycle_before_done():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     events = []
@@ -546,6 +558,7 @@ def test_two_refactors_can_complete_in_one_cycle_before_done():
 
 def test_repeated_refactor_decisions_are_bounded():
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
@@ -576,6 +589,7 @@ def test_repeated_refactor_decisions_are_bounded():
 @pytest.mark.parametrize("read_only", [False, True])
 def test_test_refactor_is_cancelled_before_editing_and_review_continues(tmp_path, read_only):
     coder = Mock()
+    coder.get_abs_fnames_content.return_value = []
     coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     coder.get_abs_fnames_content.return_value = []

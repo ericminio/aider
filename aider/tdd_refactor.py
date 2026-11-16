@@ -38,8 +38,8 @@ class RefactorCandidates:
             changed += sum(line[:2] in ("+ ", "- ") and bool(line[2:].strip()) for line in diff)
         if changed > self.max_changed_lines:
             raise ValueError(
-                f"Refactor exceeds the {self.max_changed_lines}-line small-change budget "
-                f"({changed} added/deleted nonblank lines). Choose a smaller step or complete."
+                f"Production edit exceeds the {self.max_changed_lines}-line small-change budget "
+                f"({changed} added/deleted nonblank lines). Choose a smaller production change."
             )
         failure = self.failed.get(self.state(edits))
         if failure is not None:

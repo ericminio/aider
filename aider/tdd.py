@@ -194,12 +194,16 @@ class TDDController:
             return result.output or ""
 
         coder.io.tool_output("TDD: green — implementing the smallest change.")
+        original_files = dict(coder.get_abs_fnames_content())
         prompt = (
             f"TDD GREEN phase. Original intention: {intention}\n"
             f"Selected behavior: {behavior}\nActual failing test output:\n{failure}\n"
             "Pass the failing test with a small production change. Prefer a simple rule "
             "over another hardcoded answer when it is a small step. Let generality grow "
             "from the tested examples. Do not modify tests or project configuration."
+            " A hardcoded answer for the first example is acceptable. One example does not "
+            "justify a full algorithm for untested cases. Across files and repairs, add/delete "
+            "at most 12 nonblank lines relative to the accepted red files."
         )
 
         def implement(feedback):
@@ -212,12 +216,20 @@ class TDDController:
                     "Do not modify tests or project configuration.\n"
                     + feedback
                 )
-            return EditProposal(coder).run(message)
+            return EditProposal(
+                coder, lambda edits: self.refactor_candidates.check(edits, baseline=original_files)
+            ).run(message)
+
+        def verify(status, output):
+            if status == 0:
+                return None
+            self.refactor_candidates.record_failure(output)
+            return "the existing suite is red"
 
         result = PhaseLoop(coder.io, "green", self.max_green_attempts).run(
             implement,
             self.run_tests,
-            lambda status, output: None if status == 0 else "the existing suite is red",
+            verify,
         )
         if not result.accepted:
             coder.io.tool_error(

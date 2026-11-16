@@ -14,8 +14,18 @@ from aider.utils import GitTemporaryDirectory
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node is required for green recovery")
-@pytest.mark.parametrize("repair_succeeds", [True, False])
-def test_green_repairs_use_real_failures_without_changing_the_accepted_test(repair_succeeds):
+@pytest.mark.parametrize(
+    "scenario,expressions,expected_statuses,repair_succeeds",
+    [
+        ("repair", ["originalN", "'9 = 3*3'"], [0, 1, 1, 0], True),
+        ("exhausted", ["originalN", "missing2", "missing3"], [0, 1, 1, 1, 1], False),
+        ("repeated", ["originalN", "originalN", "'9 = 3*3'"], [0, 1, 1, 0], True),
+        ("oversized", ["oversized", "'9 = 3*3'"], [0, 1, 0], True),
+    ],
+)
+def test_green_repairs_use_real_failures_without_changing_the_accepted_test(
+    scenario, expressions, expected_statuses, repair_succeeds
+):
     with GitTemporaryDirectory():
         Path("package.json").write_text('{"type":"module"}')
         Path("ready.test.js").write_text("import test from 'node:test'; test('ready', () => {});")
@@ -69,21 +79,31 @@ def test_green_repairs_use_real_failures_without_changing_the_accepted_test(repa
                 accepted_test.append(Path("prime.test.js").read_bytes())
             assert Path("prime.test.js").read_bytes() == accepted_test[0]
             content = messages[-1]["content"]
+            context = "\n".join(message["content"] for message in messages)
             if len(production_calls) > 1:
-                assert "originalN is not defined" in content
-                assert "Do not modify tests" in content
-                assert "GREEN REPAIR" in content
-            expression = (
-                "'9 = 3*3'" if repair_succeeds and len(production_calls) == 2 else "originalN"
-            )
+                if scenario == "oversized":
+                    assert "small-change" in content
+                    assert Path("prime.js").read_text() == "export function primeFactors(n) {}\n"
+                else:
+                    assert "is not defined" in content
+                    assert "Do not modify tests" in context
+                    assert "GREEN REPAIR" in context
+                if scenario == "repeated" and len(production_calls) == 3:
+                    assert "previously failed" in content
+            expression = expressions[len(production_calls) - 1]
+            production = f"export function primeFactors(n) {{ return {expression}; }}"
+            if expression == "oversized":
+                production = (
+                    "export function primeFactors(n) {\n"
+                    + "\n".join(f"const unused{i} = n + {i};" for i in range(15))
+                    + "\nreturn '9 = 3*3';\n}"
+                )
             return json.dumps(
                 {
                     "files": [
                         {
                             "path": "prime.js",
-                            "content": (
-                                f"export function primeFactors(n) {{ return {expression}; }}"
-                            ),
+                            "content": production,
                         }
                     ]
                 }
@@ -98,7 +118,7 @@ def test_green_repairs_use_real_failures_without_changing_the_accepted_test(repa
             output = controller.run_cycle("Prime factors", "9 = 3*3")
 
         assert (output is not None) is repair_succeeds
-        assert statuses == ([0, 1, 1, 0] if repair_succeeds else [0, 1, 1, 1, 1])
-        assert len(production_calls) == (2 if repair_succeeds else 3)
+        assert statuses == expected_statuses
+        assert len(production_calls) == len(expressions)
         assert Path("prime.test.js").read_bytes() == accepted_test[0]
         assert Path("package.json").read_text() == '{"type":"module"}'
