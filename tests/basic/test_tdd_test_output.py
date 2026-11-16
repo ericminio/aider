@@ -11,16 +11,20 @@ from aider.tdd_test_output import assertion_red_error
     "source, accepted",
     [
         (
-            "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
-            "test('red', () => assert.equal(0, 1));\n",
+            (
+                "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
+                "test('red', () => assert.equal(0, 1));\n"
+            ),
             True,
         ),
         ("test('red', () => {});\n", False),
         ("import test from 'node:test';\ntest('red', () => {\n", False),
         ("import { f } from './missing.mjs';\n", False),
         (
-            "import test from 'node:test';\n"
-            "test('red', () => { throw new Error('broken fixture'); });\n",
+            (
+                "import test from 'node:test';\n"
+                "test('red', () => { throw new Error('broken fixture'); });\n"
+            ),
             False,
         ),
     ],

@@ -76,6 +76,27 @@ def test_test_configuration_is_protected_before_any_write(tmp_path, path, phase)
         assert target.read_text() == "process.exit(1);"
 
 
+def test_red_can_extend_a_test_named_explicitly_in_the_test_command(tmp_path):
+    coder = context_coder(tmp_path)
+    coder.test_cmd = "node --test calc.test.js"
+    original = "test('ready', () => {});\n"
+    (tmp_path / "calc.test.js").write_text(original)
+    edits = RedProposal(coder).get_edits(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "path": "calc.test.js",
+                        "code": "test('two', () => assert.equal(double(2), 4));",
+                    }
+                ]
+            }
+        )
+    )
+    assert original in "".join(edits[0][2])
+    assert "double(2)" in "".join(edits[0][2])
+
+
 @pytest.mark.parametrize("review", ["refactor_step", "next_step"])
 def test_decision_reviews_keep_read_only_references(tmp_path, review):
     coder = context_coder(tmp_path)

@@ -36,9 +36,10 @@ class FileCheckpoint:
     def restore(self):
         if self.restored:
             return
-        changes = FileChanges(self.coder, [
-            str(path.relative_to(Path(self.coder.root).resolve())) for path in self.files
-        ])
+        changes = FileChanges(
+            self.coder,
+            [str(path.relative_to(Path(self.coder.root).resolve())) for path in self.files],
+        )
         for path, original in self.files.items():
             if original is None:
                 path.unlink(missing_ok=True)

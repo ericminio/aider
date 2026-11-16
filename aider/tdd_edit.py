@@ -82,6 +82,9 @@ class EditProposal:
                 part in ("tests", "test", "__tests__", "spec", "specs")
                 for part in Path(path).parts[:-1]
             )
-            or name.startswith("test_") or name.startswith("test.")
-            or ".test." in name or ".spec." in name or name.endswith("_test.py")
+            or name.startswith("test_")
+            or name.startswith("test.")
+            or ".test." in name
+            or ".spec." in name
+            or name.endswith("_test.py")
         )

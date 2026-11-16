@@ -138,7 +138,8 @@ its configured edit format and request parameters.
 All proposal paths also pass a test-environment gate. Known package manifests,
 lockfiles, runner configuration (including `conftest.py` and `*.config.*`), Git
 metadata, workflow files and existing files named directly in the test command
-are protected in red, green and refactor phases. This supplements read-only paths
+are protected in red, green and refactor phases. Conventional test paths named
+directly in the command remain eligible for red proposals. This supplements read-only paths
 and conventional test-path detection. It is not a sandbox or a complete analysis
 of arbitrary shell wrappers and transitive configuration; mark custom test
 infrastructure read-only when starting Aider.

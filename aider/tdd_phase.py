@@ -1,6 +1,5 @@
 from collections import namedtuple
 
-
 PhaseResult = namedtuple("PhaseResult", "accepted output attempts error status")
 
 

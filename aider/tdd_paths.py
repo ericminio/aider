@@ -54,4 +54,8 @@ def protect_test_environment(coder, path):
     for token in tokens:
         candidate = (root / token).resolve()
         if candidate == target and candidate.is_file():
+            from aider.tdd_edit import EditProposal
+
+            if EditProposal.is_test_path(path):
+                continue
             raise ValueError(f"TDD test command file is protected: {path}")

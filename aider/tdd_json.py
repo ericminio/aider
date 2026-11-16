@@ -1,6 +1,5 @@
 import json
 
-
 PLACEHOLDERS = {
     "one concrete input/output example",
     "one concrete example",
