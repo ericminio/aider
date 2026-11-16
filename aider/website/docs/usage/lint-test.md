@@ -243,10 +243,6 @@ they do not prove that all relevant cases or execution paths were tested. The mo
 must distinguish tested facts from reasoning about generality and avoid claiming
 that untested cases were verified.
 
-For repeatable evaluation with real models, see `benchmark/TDD.md`. The harness
-checks example selection, coverage selection, unnecessary refactoring and an
-end-to-end kata against an independent oracle, retaining model responses and logs.
-
 Red, green and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure
 output and up to two repair turns. Each repair receives the original green file
