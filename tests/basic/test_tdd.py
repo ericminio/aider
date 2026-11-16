@@ -18,6 +18,7 @@ from aider.utils import GitTemporaryDirectory
 
 def test_tdd_command_starts_one_cycle_with_the_users_intention():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     commands = Commands(Mock(), coder)
 
@@ -30,6 +31,7 @@ def test_tdd_command_starts_one_cycle_with_the_users_intention():
 
 def test_tdd_command_accepts_a_custom_cycle_budget():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     commands = Commands(Mock(), coder)
     with patch("aider.tdd.TDDController") as controller:
@@ -42,13 +44,25 @@ def test_tdd_command_accepts_a_custom_cycle_budget():
     "decision, expected_message",
     [
         (
-            {"action": "done", "reason": "The requested example passes."},
+            {
+                "action": "done",
+                "reason": "The requested example passes.",
+                "evidence": [
+                    {
+                        "path": "prime.test.js",
+                        "fragment": "assert.equal(primeFactors(9), '9 = 3*3')",
+                    }
+                ],
+                "assumptions": [],
+                "unverified": [],
+            },
             "TDD: done. The requested example passes.",
         ),
     ],
 )
 def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision, expected_message):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     coder.test_cmd = "npm test"
     coder.auto_test = True
@@ -56,13 +70,24 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
     coder.auto_commits = True
     coder.dirty_commits = True
     coder.suggest_shell_commands = True
-    coder.get_abs_fnames_content.return_value = [("calc.js", "return '9 = 3*3';")]
+    coder.get_abs_fnames_content.return_value = [
+        ("calc.js", "return '9 = 3*3';"),
+        ("prime.test.js", "assert.equal(primeFactors(9), '9 = 3*3')"),
+    ]
     events = []
-    results = iter([
-        (0, "ℹ tests 1\nℹ fail 0\n"),
-        (1, "AssertionError [ERR_ASSERTION]: Expected [] to equal [3, 3]\nℹ tests 2\nℹ fail 1\n"),
-        (0, "passed"),
-    ])
+    results = iter(
+        [
+            (0, "ℹ tests 1\nℹ fail 0\n"),
+            (
+                1,
+                (
+                    "AssertionError [ERR_ASSERTION]: Expected [] to equal [3, 3]\nℹ tests 2\nℹ"
+                    " fail 1\n"
+                ),
+            ),
+            (0, "passed"),
+        ]
+    )
 
     def run_tests(*args, **kwargs):
         assert args == ("npm test",)
@@ -84,7 +109,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
         edit(prompt, False)
         return True
 
-    def review(messages):
+    def review(messages, **kwargs):
         if messages[0]["content"].startswith("Review refactoring"):
             events.append("refactor-review")
             return json.dumps({"action": "complete", "reason": "No duplication remains"})
@@ -125,6 +150,7 @@ def test_one_cycle_uses_real_test_results_between_model_turns(tmp_path, decision
 @pytest.mark.parametrize("summary", ["ℹ tests {count}", "# tests {count}"])
 def test_red_with_three_new_tests_cannot_advance_to_green(summary):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     coder.get_abs_fnames_content.return_value = []
     coder.partial_response_content = "Three new tests: 1, 2, and 9"
@@ -147,6 +173,7 @@ def test_red_with_three_new_tests_cannot_advance_to_green(summary):
 
 def test_undefined_test_function_is_repaired_before_green_without_a_model_review():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     output = (
         "ReferenceError: test is not defined\n"
@@ -157,13 +184,16 @@ def test_undefined_test_function_is_repaired_before_green_without_a_model_review
     with (
         patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
         patch("aider.tdd.EditProposal.run", return_value=True) as edits,
-        patch("aider.tdd.run_cmd", side_effect=[
-            (0, "ℹ tests 1\nℹ fail 0\n"), (1, output), (1, assertion), (0, "green")
-        ]),
+        patch(
+            "aider.tdd.run_cmd",
+            side_effect=[(0, "ℹ tests 1\nℹ fail 0\n"), (1, output), (1, assertion), (0, "green")],
+        ),
         patch.object(TDDController, "next_step", return_value={"action": "done", "reason": "Done"}),
-        patch.object(TDDController, "refactor_step", return_value={
-            "action": "complete", "reason": "No duplication"
-        }),
+        patch.object(
+            TDDController,
+            "refactor_step",
+            return_value={"action": "complete", "reason": "No duplication"},
+        ),
     ):
         TDDController(coder).run("Prime decomposition")
 
@@ -178,6 +208,7 @@ def test_undefined_test_function_is_repaired_before_green_without_a_model_review
 
 def test_assertion_red_can_advance_to_green_without_a_model_review():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     controller = TDDController(coder)
     controller.test_count = 1
@@ -203,11 +234,14 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
         ready = "import test from 'node:test';\ntest('ready', () => {});\n"
         Path("ready.test.mjs").write_text(ready)
         coder = Coder.create(
-            Model("gpt-3.5-turbo"), "whole",
+            Model("gpt-3.5-turbo"),
+            "whole",
             io=InputOutput(yes=True, pretty=False, fancy_input=False),
             read_only_fnames=["ready.test.mjs"],
             test_cmd=f"{shlex.quote(node)} --test --test-reporter=tap",
-            auto_commits=False, map_tokens=0, stream=False,
+            auto_commits=False,
+            map_tokens=0,
+            stream=False,
         )
         coder.summarizer.max_tokens = 100000
         results = []
@@ -217,33 +251,46 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
             results.append(result)
             return result
 
-        def propose(messages):
+        def propose(messages, **kwargs):
             if messages[0]["content"].startswith("Review refactoring"):
                 return json.dumps({"action": "complete", "reason": "No duplication"})
             if messages[0]["content"].startswith("TDD production edit"):
                 assert len(results) == 3
                 assert "ERR_ASSERTION" in results[-1][1]
-                return json.dumps({"files": [{
-                    "path": "prime.mjs", "content": "export const primeFactors = () => '9 = 3*3';\n"
-                }]})
+                return json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "prime.mjs",
+                                "content": "export const primeFactors = () => '9 = 3*3';\n",
+                            }
+                        ]
+                    }
+                )
             imports = ["import { primeFactors } from './prime.mjs';"]
             stubs = [{"path": "prime.mjs", "content": "export const primeFactors = () => '';"}]
             if len(results) == 2:
                 assert "ReferenceError" in messages[-1]["content"]
                 assert Path("prime.mjs").read_text() == "export const primeFactors = () => '';\n"
                 imports += [
-                    "import test from 'node:test';", "import assert from 'node:assert/strict';"
+                    "import test from 'node:test';",
+                    "import assert from 'node:assert/strict';",
                 ]
                 stubs = []
             else:
                 assert len(results) == 1
-            return json.dumps({
-                "tests": [{
-                    "path": "prime.test.mjs", "imports": imports,
-                    "code": "test('nine', () => assert.equal(primeFactors(9), '9 = 3*3'));"
-                }],
-                "stubs": stubs,
-            })
+            return json.dumps(
+                {
+                    "tests": [
+                        {
+                            "path": "prime.test.mjs",
+                            "imports": imports,
+                            "code": "test('nine', () => assert.equal(primeFactors(9), '9 = 3*3'));",
+                        }
+                    ],
+                    "stubs": stubs,
+                }
+            )
 
         with (
             patch("aider.tdd.run_cmd", side_effect=run_tests),
@@ -264,10 +311,15 @@ def test_repairs_missing_node_imports_then_reaches_assertion_red_and_green():
         assert Path("ready.test.mjs").read_text() == ready
 
 
-def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_production_edits():
+def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_production_edits(tmp_path):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.test_cmd = "npm test"
     coder.get_abs_fnames_content.return_value = []
+    coder.root = str(tmp_path)
+    coder.get_abs_fnames_content.return_value = [
+        ("prime.test.js", "assert.equal(primeFactors(7), '7 = 7')")
+    ]
     controller = TDDController(coder)
     baseline = "ℹ tests 3\nℹ fail 0\n"
     green = "ℹ tests 4\nℹ fail 0\n"
@@ -275,10 +327,24 @@ def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_productio
         patch("aider.tdd.RedProposal.run", return_value=True) as proposals,
         patch("aider.tdd.run_cmd", side_effect=[(0, baseline), (0, green)]),
         patch.object(
-            coder.main_model, "simple_send_with_retries",
+            coder.main_model,
+            "simple_send_with_retries",
             side_effect=[
                 json.dumps({"action": "complete", "reason": "No duplication"}),
-                json.dumps({"action": "done", "reason": "Primes are covered"}),
+                json.dumps(
+                    {
+                        "action": "done",
+                        "reason": "Primes are covered",
+                        "evidence": [
+                            {
+                                "path": "prime.test.js",
+                                "fragment": "assert.equal(primeFactors(7), '7 = 7')",
+                            }
+                        ],
+                        "assumptions": [],
+                        "unverified": [],
+                    }
+                ),
             ],
         ) as decisions,
     ):
@@ -294,28 +360,51 @@ def test_already_green_new_test_is_kept_as_coverage_without_repairs_or_productio
 
 
 @pytest.mark.parametrize("removed_action", ["experiment", "clarify", "refactor", "complete"])
-def test_removed_decision_is_rejected_before_starting_another_cycle(removed_action):
+def test_removed_decision_is_rejected_before_starting_another_cycle(removed_action, tmp_path):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
     controller = TDDController(coder)
+    coder.root = str(tmp_path)
+    coder.get_abs_fnames_content.return_value = [
+        ("prime.test.js", "assert.equal(primeFactors(9), '9 = 3*3')")
+    ]
     calls = []
 
-    def decide(messages):
+    def decide(messages, **kwargs):
         calls.append(messages)
         if len(calls) == 1:
-            return json.dumps({
-                "action": removed_action, "question": "Does the rule handle prime inputs?",
-                "behavior": "primeFactors(7) returns '7 = 7'",
-            })
+            return json.dumps(
+                {
+                    "action": removed_action,
+                    "question": "Does the rule handle prime inputs?",
+                    "behavior": "primeFactors(7) returns '7 = 7'",
+                }
+            )
         assert "Choose next or done" in messages[-1]["content"]
-        return json.dumps({"action": "done", "reason": "The rule satisfies the intention"})
+        return json.dumps(
+            {
+                "action": "done",
+                "reason": "The rule satisfies the intention",
+                "evidence": [
+                    {
+                        "path": "prime.test.js",
+                        "fragment": "assert.equal(primeFactors(9), '9 = 3*3')",
+                    }
+                ],
+                "assumptions": [],
+                "unverified": [],
+            }
+        )
 
     with (
         patch.object(controller, "run_tests", return_value=(0, "baseline")),
         patch.object(controller, "run_cycle", return_value="green") as cycles,
-        patch.object(controller, "refactor_step", return_value={
-            "action": "complete", "reason": "No duplication"
-        }),
+        patch.object(
+            controller,
+            "refactor_step",
+            return_value={"action": "complete", "reason": "No duplication"},
+        ),
         patch.object(coder.main_model, "simple_send_with_retries", side_effect=decide),
     ):
         controller.run("Prime factorization as a string")
@@ -330,6 +419,7 @@ def test_removed_decision_is_rejected_before_starting_another_cycle(removed_acti
 @pytest.mark.parametrize("premature_action", ["next", "done"])
 def test_refactor_review_rejects_behavior_selection(premature_action):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = [("calc.js", "return 4;")]
     coder.main_model.simple_send_with_retries.side_effect = [
         json.dumps({"action": premature_action, "behavior": "double(3) == 6", "reason": "Skip"}),
@@ -348,13 +438,16 @@ def test_refactor_review_rejects_behavior_selection(premature_action):
 
 def test_default_budget_allows_a_third_cycle():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
         patch.object(controller, "run_tests", return_value=(0, "baseline passed")),
         patch.object(controller, "run_cycle", return_value="green") as cycles,
-        patch.object(controller, "refactor_step", return_value={
-            "action": "complete", "reason": "No duplication"
-        }),
+        patch.object(
+            controller,
+            "refactor_step",
+            return_value={"action": "complete", "reason": "No duplication"},
+        ),
         patch.object(
             controller,
             "next_step",
@@ -375,6 +468,7 @@ def test_default_budget_allows_a_third_cycle():
 
 def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
         patch.object(controller, "run_tests", return_value=(0, "baseline passed")),
@@ -382,11 +476,15 @@ def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
             controller, "run_cycle", side_effect=["first green", "second green"]
         ) as cycles,
         patch.object(controller, "run_refactor", return_value="refactor green") as refactor,
-        patch.object(controller, "refactor_step", side_effect=[
-            {"action": "refactor", "reason": "Remove the duplicated answer"},
-            {"action": "complete", "reason": "Duplication removed"},
-            {"action": "complete", "reason": "Still clean"},
-        ]),
+        patch.object(
+            controller,
+            "refactor_step",
+            side_effect=[
+                {"action": "refactor", "reason": "Remove the duplicated answer"},
+                {"action": "complete", "reason": "Duplication removed"},
+                {"action": "complete", "reason": "Still clean"},
+            ],
+        ),
         patch.object(
             controller,
             "next_step",
@@ -407,6 +505,7 @@ def test_refactor_can_return_to_test_selection_without_consuming_a_cycle():
 
 def test_two_refactors_can_complete_in_one_cycle_before_done():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     events = []
 
@@ -414,11 +513,13 @@ def test_two_refactors_can_complete_in_one_cycle_before_done():
         events.append("review")
         return next(proposals)
 
-    proposals = iter([
-        {"action": "refactor", "reason": "Remove hardcoded answers"},
-        {"action": "refactor", "reason": "Remove duplicated formatting"},
-        {"action": "complete", "reason": "Duplication removed"},
-    ])
+    proposals = iter(
+        [
+            {"action": "refactor", "reason": "Remove hardcoded answers"},
+            {"action": "refactor", "reason": "Remove duplicated formatting"},
+            {"action": "complete", "reason": "Duplication removed"},
+        ]
+    )
 
     def edit(*args):
         events.append("refactor")
@@ -445,17 +546,22 @@ def test_two_refactors_can_complete_in_one_cycle_before_done():
 
 def test_repeated_refactor_decisions_are_bounded():
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     controller = TDDController(coder)
     with (
         patch.object(controller, "run_tests", return_value=(0, "baseline")),
         patch.object(controller, "run_cycle", return_value="green"),
         patch.object(controller, "run_refactor", return_value="green") as edits,
-        patch.object(controller, "refactor_step", return_value={
-            "action": "refactor", "reason": "Simplify further"
-        }) as reviews,
-        patch.object(controller, "next_step", return_value={
-            "action": "done", "reason": "Intention satisfied"
-        }) as decisions,
+        patch.object(
+            controller,
+            "refactor_step",
+            return_value={"action": "refactor", "reason": "Simplify further"},
+        ) as reviews,
+        patch.object(
+            controller,
+            "next_step",
+            return_value={"action": "done", "reason": "Intention satisfied"},
+        ) as decisions,
     ):
         controller.run("Factor numbers")
 
@@ -470,28 +576,37 @@ def test_repeated_refactor_decisions_are_bounded():
 @pytest.mark.parametrize("read_only", [False, True])
 def test_test_refactor_is_cancelled_before_editing_and_review_continues(tmp_path, read_only):
     coder = Mock()
-    coder.root = str(tmp_path)
     coder.abs_read_only_fnames = set()
+    coder.root = str(tmp_path)
     coder.get_abs_fnames_content.return_value = []
     if read_only:
         coder.abs_read_only_fnames.add(str(tmp_path / "src/__tests__/calc.test.js"))
     controller = TDDController(coder)
     coder.main_model.simple_send_with_retries.side_effect = [
-        json.dumps({
-            "action": "refactor", "changes": [{
-                "path": "src/__tests__/calc.test.js", "before": "expected", "after": "constant"
-            }],
-            "reason": "Extract the expected value in the test",
-        }),
+        json.dumps(
+            {
+                "action": "refactor",
+                "changes": [
+                    {
+                        "path": "src/__tests__/calc.test.js",
+                        "before": "expected",
+                        "after": "constant",
+                    }
+                ],
+                "reason": "Extract the expected value in the test",
+            }
+        ),
         json.dumps({"action": "complete", "reason": "No production duplication remains"}),
     ]
     with (
         patch.object(controller, "run_tests", return_value=(0, "baseline")) as tests,
         patch.object(controller, "run_cycle", return_value="green"),
         patch.object(controller, "run_refactor") as edits,
-        patch.object(controller, "next_step", return_value={
-            "action": "done", "reason": "Intention satisfied"
-        }) as decisions,
+        patch.object(
+            controller,
+            "next_step",
+            return_value={"action": "done", "reason": "Intention satisfied"},
+        ) as decisions,
     ):
         controller.run("Double numbers")
 
@@ -527,7 +642,8 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
         if continue_cycle:
             responses.append(
                 "def double(n):\n    if n == 3:\n        return 6\n    return 4\n"
-                if continue_cycle == "refactor" else "def double(n):\n    return n * 2\n"
+                if continue_cycle == "refactor"
+                else "def double(n):\n    return n * 2\n"
             )
         if continue_cycle == "refactor":
             responses.append("def double(n):\n    return n * 2\n")
@@ -543,16 +659,34 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
             statuses.append(result[0])
             return result
 
-        def review_or_decide(messages):
+        def review_or_decide(messages, **kwargs):
             if messages[0]["content"].startswith("Review refactoring"):
                 if continue_cycle == "refactor" and len(statuses) == 5:
                     assert "return 6" in messages[-1]["content"]
                     tests_before_refactor.append(Path("test_calc.py").read_text())
-                    return json.dumps({
-                        "action": "refactor", "reason": "Replace duplicated example answers",
-                        "changes": [{"path": "calc.py", "before": Path("calc.py").read_text(),
-                                     "after": "def double(n):\n    return n * 2\n"}]
-                    })
+                    return json.dumps(
+                        {
+                            "action": "refactor",
+                            "reason": "Replace duplicated example answers",
+                            "kind": "duplication",
+                            "duplicate": "6",
+                            "preserves": "Multiplication matches both examples",
+                            "evidence": [
+                                {"path": "calc.py", "fragment": "return 6"},
+                                {
+                                    "path": "test_calc.py",
+                                    "fragment": "self.assertEqual(double(3), 6)",
+                                },
+                            ],
+                            "changes": [
+                                {
+                                    "path": "calc.py",
+                                    "before": Path("calc.py").read_text(),
+                                    "after": "def double(n):\n    return n * 2\n",
+                                }
+                            ],
+                        }
+                    )
                 return json.dumps({"action": "complete", "reason": "No duplication remains"})
             if messages[0]["content"].startswith("TDD production edit"):
                 production_turns.append(messages)
@@ -563,12 +697,16 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
                 if len(statuses) == 1:
                     return json.dumps(
                         {
-                            "tests": [{
-                                "path": "test_calc.py",
-                                "imports": ["import unittest", "from calc import double"],
-                                "code": "class TestDouble(unittest.TestCase):\n"
-                                "    def test_two(self):\n        self.assertEqual(double(2), 4)",
-                            }],
+                            "tests": [
+                                {
+                                    "path": "test_calc.py",
+                                    "imports": ["import unittest", "from calc import double"],
+                                    "code": (
+                                        "class TestDouble(unittest.TestCase):\n    def"
+                                        " test_two(self):\n        self.assertEqual(double(2), 4)"
+                                    ),
+                                }
+                            ],
                             "stubs": [
                                 {"path": "calc.py", "content": "def double(n):\n    return 0"}
                             ],
@@ -578,32 +716,59 @@ def test_command_creates_files_from_read_only_context_with_real_test_runs(contin
                 assert "double(3) == 6" in messages[-1]["content"]
                 return json.dumps(
                     {
-                        "tests": [{
-                            "path": "test_calc.py",
-                            "imports": [],
-                            "code": "class TestThree(unittest.TestCase):\n"
-                            "    def test_three(self):\n        self.assertEqual(double(3), 6)",
-                        }],
+                        "tests": [
+                            {
+                                "path": "test_calc.py",
+                                "imports": [],
+                                "code": (
+                                    "class TestThree(unittest.TestCase):\n    def"
+                                    " test_three(self):\n        self.assertEqual(double(3), 6)"
+                                ),
+                            }
+                        ],
                         "stubs": [],
                     }
                 )
             if "Decide" in messages[0]["content"]:
                 if continue_cycle and len(statuses) == 5:
                     assert statuses == [0, 1, 0, 1, 0]
-                    return json.dumps({
-                        "action": "next", "behavior": "double(4) == 8", "reason": "Check four"
-                    })
+                    return json.dumps(
+                        {"action": "next", "behavior": "double(4) == 8", "reason": "Check four"}
+                    )
                 if len(statuses) == 6:
                     assert "return n * 2" in messages[-1]["content"]
-                    return json.dumps({"action": "done", "reason": "Duplication removed."})
+                    return json.dumps(
+                        {
+                            "action": "done",
+                            "reason": "Duplication removed.",
+                            "evidence": [
+                                {
+                                    "path": "test_calc.py",
+                                    "fragment": "self.assertEqual(double(2), 4)",
+                                }
+                            ],
+                            "assumptions": [],
+                            "unverified": [],
+                        }
+                    )
                 assert statuses == [0, 1, 0]
                 assert "return 4" in messages[-1]["content"]
                 assert "self.assertEqual(double(2), 4)" in messages[-1]["content"]
                 if continue_cycle:
-                    return json.dumps({
-                        "action": "next", "behavior": "double(3) == 6", "reason": "Check three"
-                    })
-                return json.dumps({"action": "done", "reason": "Example implemented."})
+                    return json.dumps(
+                        {"action": "next", "behavior": "double(3) == 6", "reason": "Check three"}
+                    )
+                return json.dumps(
+                    {
+                        "action": "done",
+                        "reason": "Example implemented.",
+                        "evidence": [
+                            {"path": "test_calc.py", "fragment": "self.assertEqual(double(2), 4)"}
+                        ],
+                        "assumptions": [],
+                        "unverified": [],
+                    }
+                )
             pytest.fail("Unexpected model call for red review")
 
         with (

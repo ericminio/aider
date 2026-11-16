@@ -6,6 +6,7 @@ from grep_ast.tsl import get_parser
 from aider.coders.wholefile_coder import WholeFileCoder
 from aider.tdd_changes import FileChanges
 from aider.tdd_json import parse_object
+from aider.tdd_paths import protect_test_environment
 
 
 class RedProposal:
@@ -62,7 +63,7 @@ class RedProposal:
             )
         for attempt in range(1, self.max_attempts + 1):
             coder.io.tool_output(f"TDD: red JSON proposal {attempt}/{self.max_attempts}.")
-            response = coder.main_model.simple_send_with_retries(messages)
+            response = coder.main_model.simple_send_with_retries(messages, json_mode=True)
             try:
                 edits = self.get_edits(response)
             except ValueError as err:
@@ -93,6 +94,8 @@ class RedProposal:
             if self.test_path is None:
                 self.test_path = test_path
                 self.original_test_content = original
+            if coder.aider_edited_files is None:
+                coder.aider_edited_files = set()
             for path, _, _ in approved:
                 coder.aider_edited_files.add(path)
             changes.show()
@@ -212,4 +215,6 @@ class RedProposal:
             raise ValueError("File paths must stay within the repository")
         if full_path in {Path(name).resolve() for name in self.coder.abs_read_only_fnames}:
             raise ValueError(f"{path} is read-only")
-        return str(full_path.relative_to(root)), full_path
+        relative = str(full_path.relative_to(root))
+        protect_test_environment(self.coder, relative)
+        return relative, full_path

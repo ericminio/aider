@@ -2,13 +2,20 @@ import json
 
 
 PLACEHOLDERS = {
-    "one concrete input/output example", "one concrete example",
+    "one concrete input/output example",
+    "one concrete example",
     "duplication present now and the small change that removes it",
-    "specific duplication and how to remove it", "specific duplication to remove",
-    "evidence in the current code", "code evidence of missing behavior",
-    "how the code satisfies the full intention", "why the full intention is satisfied",
-    "no useful duplication removal remains", "why no useful refactoring remains",
-    "relative/production-file", "relative/source-file", "relative/test-file",
+    "specific duplication and how to remove it",
+    "specific duplication to remove",
+    "evidence in the current code",
+    "code evidence of missing behavior",
+    "how the code satisfies the full intention",
+    "why the full intention is satisfied",
+    "no useful duplication removal remains",
+    "why no useful refactoring remains",
+    "relative/production-file",
+    "relative/source-file",
+    "relative/test-file",
 }
 
 
@@ -50,15 +57,27 @@ def request_json(coder, messages, validate, label, max_attempts=3):
     messages[0]["content"] += " Return only JSON, without markdown fences or surrounding prose."
     for attempt in range(1, max_attempts + 1):
         coder.io.tool_output(f"TDD: {label} JSON response {attempt}/{max_attempts}.")
-        response = coder.main_model.simple_send_with_retries(messages)
+        response = coder.main_model.simple_send_with_retries(messages, json_mode=True)
         try:
             return validate(parse_object(response))
         except ValueError as err:
             coder.io.tool_output(f"TDD: rejected {label} before applying changes: {err}")
+            reassess = (
+                " Reassess whether a useful refactor exists; choose complete if no grounded "
+                "improvement remains, rather than invent evidence for the rejected idea."
+                if label == "refactor review"
+                else ""
+            )
             messages += [
                 {"role": "assistant", "content": response or ""},
-                {"role": "user", "content": f"Rejected: {err}. Return a corrected JSON object. "
-                 "No changes from this rejected response were applied."},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Rejected: {err}. Return a corrected JSON object. "
+                        "No changes from this rejected response were applied."
+                        + reassess
+                    ),
+                },
             ]
     coder.io.tool_error(f"TDD: no valid {label} JSON after {max_attempts} attempts.")
     return None

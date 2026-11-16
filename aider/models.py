@@ -982,7 +982,7 @@ class Model(ModelSettings):
 
             os.environ[openai_api_key] = token
 
-    def send_completion(self, messages, functions, stream, temperature=None):
+    def send_completion(self, messages, functions, stream, temperature=None, response_format=None):
         if os.environ.get("AIDER_SANITY_CHECK_TURNS"):
             sanity_check_messages(messages)
 
@@ -1009,6 +1009,8 @@ class Model(ModelSettings):
             kwargs["tool_choice"] = {"type": "function", "function": {"name": function["name"]}}
         if self.extra_params:
             kwargs.update(self.extra_params)
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         if self.is_ollama() and "num_ctx" not in kwargs:
             num_ctx = int(self.token_count(messages) * 1.25) + 8192
             kwargs["num_ctx"] = num_ctx
@@ -1036,13 +1038,21 @@ class Model(ModelSettings):
         res = litellm.completion(**kwargs)
         return hash_object, res
 
-    def simple_send_with_retries(self, messages):
+    def simple_send_with_retries(self, messages, json_mode=False):
         from aider.exceptions import LiteLLMExceptions
 
         litellm_ex = LiteLLMExceptions()
         if "deepseek-reasoner" in self.name:
             messages = ensure_alternating_roles(messages)
         retry_delay = 0.125
+        response_format = None
+        if json_mode and not getattr(self, "json_mode_unsupported", False):
+            try:
+                supported = litellm.get_supported_openai_params(model=self.name) or []
+            except (KeyError, ValueError):
+                supported = []
+            if "response_format" in supported:
+                response_format = {"type": "json_object"}
 
         if self.verbose:
             dump(messages)
@@ -1054,6 +1064,8 @@ class Model(ModelSettings):
                     "functions": None,
                     "stream": False,
                 }
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
 
                 _hash, response = self.send_completion(**kwargs)
                 if not response or not hasattr(response, "choices") or not response.choices:
@@ -1064,6 +1076,11 @@ class Model(ModelSettings):
                 return remove_reasoning_content(res, self.reasoning_tag)
 
             except litellm_ex.exceptions_tuple() as err:
+                if response_format is not None and isinstance(err, litellm.UnsupportedParamsError):
+                    print("JSON mode unsupported by provider; using validated prompt responses.")
+                    response_format = None
+                    self.json_mode_unsupported = True
+                    continue
                 ex_info = litellm_ex.get_ex_info(err)
                 print(str(err))
                 if ex_info.description:

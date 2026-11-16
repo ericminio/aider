@@ -15,6 +15,7 @@ def test_conflicting_json_file_entries_are_corrected_before_writing(
     tmp_path, missing_slash, unchanged
 ):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     history = tmp_path / "chat.md"
     coder.io = InputOutput(
@@ -31,20 +32,26 @@ def test_conflicting_json_file_entries_are_corrected_before_writing(
     target.write_text(original)
     calls = []
 
-    def answer(messages):
+    def answer(messages, **kwargs):
         calls.append(messages)
         assert target.read_text() == original
         if len(calls) == 1:
-            return json.dumps({"files": [
-                {"path": "calc.js", "content": "export const f = () => 1;\n"},
-                {"path": str(target).lstrip("/") if missing_slash else str(target),
-                 "content": "export const f = () => 2;\n"},
-            ]})
+            return json.dumps(
+                {
+                    "files": [
+                        {"path": "calc.js", "content": "export const f = () => 1;\n"},
+                        {
+                            "path": str(target).lstrip("/") if missing_slash else str(target),
+                            "content": "export const f = () => 2;\n",
+                        },
+                    ]
+                }
+            )
         expected = "leading slash" if missing_slash else "Duplicate file"
         assert expected in messages[-1]["content"]
-        return json.dumps({"files": [
-            {"path": "calc.js", "content": "export const f = () => 2;\n"}
-        ]})
+        return json.dumps(
+            {"files": [{"path": "calc.js", "content": "export const f = () => 2;\n"}]}
+        )
 
     coder.main_model.simple_send_with_retries.side_effect = answer
     assert EditProposal(coder).run("TDD GREEN phase: make f return 2")
@@ -63,30 +70,45 @@ def test_conflicting_json_file_entries_are_corrected_before_writing(
     assert "+export const f = () => 1;" not in log
 
 
-@pytest.mark.parametrize("response", [
-    'Here are the edits: {"files": []}',
-    '```json\n{"files": []}\n```',
-    '{"files": [], "files": []}',
-    '{"files": [{"path": "calc.js", "content": "first", "content": "second"}]}',
-    '[]',
-])
+@pytest.mark.parametrize(
+    "response",
+    [
+        'Here are the edits: {"files": []}',
+        '```json\n{"files": []}\n```',
+        '{"files": [], "files": []}',
+        '{"files": [{"path": "calc.js", "content": "first", "content": "second"}]}',
+        "[]",
+    ],
+)
 def test_non_json_or_ambiguous_objects_are_rejected(response):
     with pytest.raises(ValueError):
         parse_object(response)
 
 
-@pytest.mark.parametrize("path", [
-    "../outside.js", "src/__tests__/calc.js", "calc.test.js", "test_calc.py", "reference.js",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../outside.js",
+        "src/__tests__/calc.js",
+        "calc.test.js",
+        "test_calc.py",
+        "reference.js",
+    ],
+)
 def test_invalid_file_in_collection_prevents_every_write(tmp_path, path):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     coder.abs_read_only_fnames = {str(tmp_path / "reference.js")}
     coder.get_abs_fnames_content.return_value = []
-    coder.main_model.simple_send_with_retries.return_value = json.dumps({"files": [
-        {"path": "calc.js", "content": "export const f = () => 2;\n"},
-        {"path": path, "content": "invalid edit"},
-    ]})
+    coder.main_model.simple_send_with_retries.return_value = json.dumps(
+        {
+            "files": [
+                {"path": "calc.js", "content": "export const f = () => 2;\n"},
+                {"path": path, "content": "invalid edit"},
+            ]
+        }
+    )
 
     assert not EditProposal(coder).run("Make f return 2")
 
@@ -95,18 +117,28 @@ def test_invalid_file_in_collection_prevents_every_write(tmp_path, path):
     assert coder.main_model.simple_send_with_retries.call_count == 3
 
 
-def test_invalid_decisions_are_corrected_before_selecting_a_move():
+def test_invalid_decisions_are_corrected_before_selecting_a_move(tmp_path):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
+    coder.root = str(tmp_path)
+    coder.get_abs_fnames_content.return_value = [("test_calc.py", "self.assertEqual(double(2), 4)")]
+    accepted = {
+        "action": "done",
+        "reason": "The rule satisfies the intention",
+        "evidence": [{"path": "test_calc.py", "fragment": "self.assertEqual(double(2), 4)"}],
+        "assumptions": [],
+        "unverified": [],
+    }
     coder.main_model.simple_send_with_retries.side_effect = [
-        'I think we are done.',
+        "I think we are done.",
         '{"action":"next","behavior":"double(3) == 6"}',
-        '{"action":"done","reason":"The rule satisfies the intention"}',
+        json.dumps(accepted),
     ]
 
     decision = TDDController(coder).next_step("Double integers", ["double(2) == 4"], "green")
 
-    assert decision == {"action": "done", "reason": "The rule satisfies the intention"}
+    assert decision == accepted
     messages = coder.main_model.simple_send_with_retries.call_args.args[0]
     assert "nonempty reason" in messages[-1]["content"]
     coder.run.assert_not_called()
@@ -114,11 +146,12 @@ def test_invalid_decisions_are_corrected_before_selecting_a_move():
 
 def test_invalid_json_never_reaches_the_file_writer(tmp_path):
     coder = Mock()
+    coder.abs_read_only_fnames = set()
     coder.root = str(tmp_path)
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
     coder.main_model.simple_send_with_retries.return_value = (
-        'calc.js\n```javascript\nexport const f = () => 2;\n```'
+        "calc.js\n```javascript\nexport const f = () => 2;\n```"
     )
 
     assert not EditProposal(coder).run("Make f return 2")
@@ -127,10 +160,13 @@ def test_invalid_json_never_reaches_the_file_writer(tmp_path):
     coder.io.write_text.assert_not_called()
 
 
-@pytest.mark.parametrize("field,value", [
-    ("behavior", "one concrete input/output example"),
-    ("reason", "duplication present now and the small change that removes it"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("behavior", "one concrete input/output example"),
+        ("reason", "duplication present now and the small change that removes it"),
+    ],
+)
 def test_copied_prompt_placeholders_are_rejected(field, value):
     with pytest.raises(ValueError, match="placeholder"):
         parse_object(json.dumps({field: value}))

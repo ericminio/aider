@@ -5,7 +5,13 @@ import re
 from aider.run_cmd import run_cmd
 from aider.tdd_checkpoint import FileCheckpoint
 from aider.tdd_edit import EditProposal
-from aider.tdd_json import request_json
+from aider.tdd_evidence import (
+    validate_duplication,
+    validate_evidence,
+    validate_simplification,
+    validate_string_list,
+)
+from aider.tdd_json import file_context, request_json
 from aider.tdd_phase import PhaseLoop
 from aider.tdd_red import RedProposal
 from aider.tdd_refactor import RefactorCandidates
@@ -37,7 +43,11 @@ class TDDController:
         settings = {
             name: getattr(coder, name)
             for name in (
-                "auto_test", "auto_lint", "auto_commits", "dirty_commits", "suggest_shell_commands"
+                "auto_test",
+                "auto_lint",
+                "auto_commits",
+                "dirty_commits",
+                "suggest_shell_commands",
             )
         }
         completed = []
@@ -75,11 +85,13 @@ class TDDController:
                         break
                     if action == "cancelled":
                         coder.io.tool_output(f"TDD: cancelled refactor — {decision['reason']}")
-                        self.refactor_history.append({
-                            "reason": decision["reason"],
-                            "outcome": "cancelled; test refactoring is disabled",
-                            "files": decision["files"],
-                        })
+                        self.refactor_history.append(
+                            {
+                                "reason": decision["reason"],
+                                "outcome": "cancelled; test refactoring is disabled",
+                                "files": decision["files"],
+                            }
+                        )
                         refactored += 1
                         continue
                     if action != "refactor":
@@ -102,6 +114,18 @@ class TDDController:
                 action = decision.get("action")
                 if action == "done":
                     coder.io.tool_output(f"TDD: done. {decision.get('reason', '')}")
+                    coder.io.tool_output(
+                        "TDD: completion is the model's assessment of the evidence."
+                    )
+                    for item in decision.get("evidence", []):
+                        coder.io.tool_output(
+                            f"TDD: test evidence — {item['path']}: {item['fragment']}"
+                        )
+                    coder.io.tool_output(
+                        "TDD: assumptions — " + "; ".join(decision.get("assumptions", []))
+                        if decision.get("assumptions")
+                        else "TDD: assumptions — none reported."
+                    )
                     return
                 if action == "next" and cycle == self.max_cycles:
                     coder.io.tool_output(
@@ -111,11 +135,7 @@ class TDDController:
                     return
 
                 behavior = decision.get("behavior")
-                if (
-                    action != "next"
-                    or not isinstance(behavior, str)
-                    or not behavior.strip()
-                ):
+                if action != "next" or not isinstance(behavior, str) or not behavior.strip():
                     coder.io.tool_error("TDD: no next behavior selected; review before continuing.")
                     return
         finally:
@@ -200,7 +220,10 @@ class TDDController:
         )
 
         def propose(feedback):
-            editor = EditProposal(self.coder, self.refactor_candidates.check)
+            editor = EditProposal(
+                self.coder,
+                lambda edits: self.refactor_candidates.check(edits, baseline=original_files),
+            )
             if feedback is None and changes is not None:
                 files = self.refactor_candidates.plan(changes)
                 return editor.apply(editor.get_edits({"files": files}))
@@ -225,18 +248,23 @@ class TDDController:
             self.refactor_candidates.record_failure(output)
             current_files = dict(self.coder.get_abs_fnames_content())
             changes = "".join(
-                "".join(difflib.unified_diff(
-                    (original_files.get(name) or "").splitlines(keepends=True),
-                    (current_files.get(name) or "").splitlines(keepends=True),
-                    fromfile=f"green/{name}", tofile=f"candidate/{name}",
-                ))
+                "".join(
+                    difflib.unified_diff(
+                        (original_files.get(name) or "").splitlines(keepends=True),
+                        (current_files.get(name) or "").splitlines(keepends=True),
+                        fromfile=f"green/{name}",
+                        tofile=f"candidate/{name}",
+                    )
+                )
                 for name in sorted(original_files.keys() | current_files.keys())
             )
-            failed_attempts.append({
-                "attempt": len(failed_attempts) + 1,
-                "changes": changes,
-                "test_output": output,
-            })
+            failed_attempts.append(
+                {
+                    "attempt": len(failed_attempts) + 1,
+                    "changes": changes,
+                    "test_output": output,
+                }
+            )
             return "the existing suite is red"
 
         with FileCheckpoint(self.coder) as checkpoint:
@@ -255,19 +283,23 @@ class TDDController:
             if status != 0:
                 self.coder.io.tool_error("TDD: checkpoint restored but tests are red; stopping.")
                 return
-            self.refactor_history.append({
-                "reason": reason,
-                "outcome": "abandoned; restored green checkpoint",
-                "attempts": result.attempts,
-                "failure": result.output,
-                "failed_attempts": failed_attempts,
-            })
+            self.refactor_history.append(
+                {
+                    "reason": reason,
+                    "outcome": "abandoned; restored green checkpoint",
+                    "attempts": result.attempts,
+                    "failure": result.output,
+                    "failed_attempts": failed_attempts,
+                }
+            )
             self.coder.cur_messages += [
                 {
                     "role": "user",
-                    "content": f"Abandoned refactor: {reason}. "
-                    "Restored the exact pre-refactor files and verified the suite is green. "
-                    "The attempted edits are no longer on disk. Choose a different next move.",
+                    "content": (
+                        f"Abandoned refactor: {reason}. "
+                        "Restored the exact pre-refactor files and verified the suite is green. "
+                        "The attempted edits are no longer on disk. Choose a different next move."
+                    ),
                 },
                 {
                     "role": "assistant",
@@ -280,10 +312,7 @@ class TDDController:
             return output or ""
 
     def decision_context(self, intention, completed, output, refactored):
-        files = "\n\n".join(
-            f"File: {name}\n{content}"
-            for name, content in self.coder.get_abs_fnames_content()
-        )
+        files = file_context(self.coder)
         return (
             f"Original intention: {intention}\nCompleted cycles: {completed}\n"
             f"Refactors attempted this cycle: {refactored}\n"
@@ -300,24 +329,40 @@ class TDDController:
                 "role": "system",
                 "content": (
                     "Review refactoring after green. Compare tests and production for repeated "
-                    "knowledge, including example values copied into production. Remove one "
-                    "small duplication in production; leave tests unchanged. Guards, base "
+                    "knowledge, including example values copied into production. No useful "
+                    "refactor is a normal outcome; do not invent duplication to fill the budget. "
+                    "Remove one small duplication or simplify production; leave tests unchanged. "
+                    "Do not introduce a full algorithm for untested categories. Guards, base "
                     "cases and algorithm seeds may be legitimate. Use exact current source "
                     "fragments and their replacement. Aider applies these changes directly.\n"
-                    "Return JSON with action refactor, reason, and changes. Each change has "
+                    "Return JSON with action refactor, kind (duplication or simplification), "
+                    "reason (the repeated knowledge or unnecessary complexity), preserves "
+                    "(why the tested behavior is preserved), evidence, and changes. "
+                    "Each evidence item has path and fragment, an exact unique source quote "
+                    "from current context. Duplication needs at least two distinct occurrences; "
+                    "also supply duplicate, the exact repeated source string present in every "
+                    "citation. The edit must reduce its occurrences in production. "
+                    "Simplification needs one citation and must reduce non-whitespace source. "
+                    "Equivalent style preferences are not a useful refactor. "
+                    "Moving a single calculation to a "
+                    "variable is not duplication removal. Explain the concrete benefit. "
+                    "At most 12 added/deleted nonblank lines across all files, including repairs. "
+                    "Each change has "
                     "path (repository-relative), before (one unique current fragment), and "
                     "after (its replacement). Supply actual strings.\n"
                     "If no useful change remains, return action complete and a reason. "
                     "Complete ends this phase only."
                 ),
             },
-            {"role": "user", "content": self.decision_context(
-                intention, completed, output, refactored
-            )},
+            {
+                "role": "user",
+                "content": self.decision_context(intention, completed, output, refactored),
+            },
         ]
-        return request_json(
-            self.coder, messages, self.validate_refactor_decision, "refactor review"
-        ) or {}
+        return (
+            request_json(self.coder, messages, self.validate_refactor_decision, "refactor review")
+            or {}
+        )
 
     def next_step(self, intention, completed, output, refactored=0):
         self.coder.io.tool_output("TDD: choosing the next behavior or done.")
@@ -326,30 +371,43 @@ class TDDController:
                 "role": "system",
                 "content": (
                     "Decide the next behavior or done. Compare the intention with the current "
-                    "code and tests. For missing behavior, return JSON with action next, "
-                    "behavior (one actual input/output example), and reason (why the current "
-                    "code fails it). Otherwise return action done and explain how the code "
-                    "satisfies the full intention. Passing examples alone do not establish "
-                    "a general requirement. Stay within scope and avoid repeating tests."
+                    "code and tests. Select missing behavior OR a useful untested category, "
+                    "even if it may already pass after generalization. Return JSON with action "
+                    "next, behavior (a string describing one actual input/output example, "
+                    "not an object), and reason (a string explaining the gap in "
+                    "behavior or coverage). Passing examples alone do not establish a general "
+                    "requirement. Compare materially different cases implied by the intention, "
+                    "rather than imposing a fixed test count. Stay within scope and avoid repeats. "
+                    "Only when no useful in-scope gap remains, return action done, reason "
+                    "(separate tested facts from reasoning about generality), evidence "
+                    "(path and fragment quotes from actual current tests), assumptions "
+                    "(a list of input-domain assumptions, or []), and unverified "
+                    "(a list of remaining in-scope gaps, or []). Do not claim untested cases "
+                    "were verified. If unverified is nonempty, choose next instead."
                 ),
             },
-            {"role": "user", "content": self.decision_context(
-                intention, completed, output, refactored
-            )},
+            {
+                "role": "user",
+                "content": self.decision_context(intention, completed, output, refactored),
+            },
         ]
-        return request_json(
-            self.coder, messages, self.validate_decision, "next move"
-        ) or {}
+        return request_json(self.coder, messages, self.validate_decision, "next move") or {}
 
     def validate_refactor_decision(self, decision):
-        decision = self.validate_action(decision, {
-            "refactor": ("reason",), "complete": ("reason",),
-        })
+        decision = self.validate_action(
+            decision,
+            {
+                "refactor": ("reason",),
+                "complete": ("reason",),
+            },
+        )
         if decision["action"] == "complete":
             return decision
         changes = decision.get("changes")
-        if not isinstance(changes, list) or not changes or any(
-            not isinstance(change, dict) for change in changes
+        if (
+            not isinstance(changes, list)
+            or not changes
+            or any(not isinstance(change, dict) for change in changes)
         ):
             raise ValueError("A refactor needs changes with path, before and after strings")
         files = [change.get("path") for change in changes]
@@ -361,15 +419,35 @@ class TDDController:
                 "reason": f"Test refactoring is disabled. Proposed: {decision['reason']}",
                 "files": files,
             }
+        kind = decision.get("kind")
+        if kind not in ("duplication", "simplification"):
+            raise ValueError("Refactor kind must be duplication or simplification")
+        validate_evidence(self.coder, decision.get("evidence"), 2 if kind == "duplication" else 1)
+        if not isinstance(decision.get("preserves"), str) or not decision["preserves"].strip():
+            raise ValueError("Refactor needs preserves explaining why tested behavior is preserved")
         proposed = self.refactor_candidates.plan(changes)
+        if kind == "duplication":
+            validate_duplication(self.coder, decision, proposed)
+        else:
+            validate_simplification(self.coder, proposed)
         editor = EditProposal(self.coder, self.refactor_candidates.check)
         edits = editor.get_edits({"files": proposed})
         return dict(decision, files=[path for path, _, _ in edits])
 
     def validate_decision(self, decision):
-        return self.validate_action(decision, {
-            "next": ("behavior", "reason"), "done": ("reason",),
-        })
+        decision = self.validate_action(
+            decision,
+            {
+                "next": ("behavior", "reason"),
+                "done": ("reason",),
+            },
+        )
+        if decision["action"] == "done":
+            validate_evidence(self.coder, decision.get("evidence"), tests_only=True)
+            validate_string_list(decision, "assumptions")
+            if validate_string_list(decision, "unverified"):
+                raise ValueError("Unverified in-scope gaps remain; choose next for one example")
+        return decision
 
     def validate_action(self, decision, fields):
         action = decision.get("action")
@@ -377,7 +455,9 @@ class TDDController:
             raise ValueError("Choose " + " or ".join(fields))
         for field in fields[action]:
             if not isinstance(decision.get(field), str) or not decision[field].strip():
-                raise ValueError(f"Decision {action} needs a nonempty {field}")
+                raise ValueError(
+                    f"Decision {action} needs a nonempty {field} string, not an object"
+                )
         return decision
 
     def run_tests(self):

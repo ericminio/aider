@@ -12,8 +12,13 @@ def test_absolute_proposal_paths_inside_repository_are_normalized(tmp_path):
     coder.root = str(tmp_path)
     coder.abs_read_only_fnames = set()
     proposal = {
-        "tests": [{"path": str(tmp_path / "src/test.js"), "imports": [],
-                   "code": "test('example', () => {});"}],
+        "tests": [
+            {
+                "path": str(tmp_path / "src/test.js"),
+                "imports": [],
+                "code": "test('example', () => {});",
+            }
+        ],
         "stubs": [{"path": str(tmp_path / "src/calc.js"), "content": "export const f = () => 0;"}],
     }
     edits = RedProposal(coder).get_edits(json.dumps(proposal))
@@ -72,13 +77,11 @@ def test_rejected_multi_test_proposal_never_reaches_disk(tmp_path):
         "stubs": [{"path": "calc.js", "content": "export const f = () => 0;\n"}],
     }
     accepted = {
-        "tests": [
-            {"path": "test.js", "imports": [], "code": "test('a', () => {});"}
-        ],
+        "tests": [{"path": "test.js", "imports": [], "code": "test('a', () => {});"}],
         "stubs": [],
     }
 
-    def answer(messages):
+    def answer(messages, **kwargs):
         assert test_file.read_text() == original
         assert not (tmp_path / "calc.js").exists()
         if coder.main_model.simple_send_with_retries.call_count == 1:
@@ -107,6 +110,7 @@ def test_duplicate_node_test_name_is_corrected_before_writing(tmp_path):
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
     coder.cur_messages = []
+    coder.aider_edited_files = None
     coder.abs_root_path.side_effect = lambda path: str(tmp_path / path)
     coder.prepare_to_edit.side_effect = lambda edits: edits
     test_file = tmp_path / "prime.test.js"
@@ -114,20 +118,28 @@ def test_duplicate_node_test_name_is_corrected_before_writing(tmp_path):
     test_file.write_text(original)
     responses = iter(["decomposes 9 as 3*3", "decomposes 12 as 2*2*3"])
 
-    def answer(messages):
+    def answer(messages, **kwargs):
         assert test_file.read_text() == original
         if coder.main_model.simple_send_with_retries.call_count == 2:
             assert "Duplicate test name" in messages[-1]["content"]
-        return json.dumps({"tests": [{
-            "path": "prime.test.js", "imports": [],
-            "code": f"test({json.dumps(next(responses))}, () => {{}});"
-        }]})
+        return json.dumps(
+            {
+                "tests": [
+                    {
+                        "path": "prime.test.js",
+                        "imports": [],
+                        "code": f"test({json.dumps(next(responses))}, () => {{}});",
+                    }
+                ]
+            }
+        )
 
     coder.main_model.simple_send_with_retries.side_effect = answer
     assert RedProposal(coder).run("Prime factors", "12 = 2*2*3")
     assert coder.main_model.simple_send_with_retries.call_count == 2
     assert test_file.read_text().count("decomposes 9 as 3*3") == 1
     assert test_file.read_text().count("decomposes 12 as 2*2*3") == 1
+    assert coder.aider_edited_files == {"prime.test.js"}
 
 
 def test_repair_replaces_the_proposed_test_and_preserves_earlier_tests(tmp_path):
@@ -145,8 +157,13 @@ def test_repair_replaces_the_proposed_test_and_preserves_earlier_tests(tmp_path)
     proposal = RedProposal(coder)
     first = {"tests": [{"path": "test.js", "imports": [], "code": "brokenTest();"}]}
     fixed = {
-        "tests": [{"path": "test.js", "imports": ["import test from 'node:test';"],
-                   "code": "test('new behavior', () => {});"}]
+        "tests": [
+            {
+                "path": "test.js",
+                "imports": ["import test from 'node:test';"],
+                "code": "test('new behavior', () => {});",
+            }
+        ]
     }
     coder.main_model.simple_send_with_retries.side_effect = [json.dumps(first), json.dumps(fixed)]
     assert proposal.run("Add one behavior", "new behavior")

@@ -22,12 +22,18 @@ def make_coder():
         "    def test_two(self):\n        self.assertEqual(double(2), 4)\n"
     )
     coder = Coder.create(
-        Model("gpt-3.5-turbo"), "whole",
+        Model("gpt-3.5-turbo"),
+        "whole",
         io=InputOutput(yes=True, pretty=False, fancy_input=False),
         fnames=["calc.py", "test_calc.py"],
         test_cmd=f"{shlex.quote(sys.executable)} -B -m unittest discover",
-        auto_commits=False, dirty_commits=False, auto_test=False, auto_lint=False,
-        suggest_shell_commands=False, stream=False, map_tokens=0,
+        auto_commits=False,
+        dirty_commits=False,
+        auto_test=False,
+        auto_lint=False,
+        suggest_shell_commands=False,
+        stream=False,
+        map_tokens=0,
     )
     coder.summarizer.max_tokens = 100000
     return coder
@@ -37,11 +43,13 @@ def test_failed_refactor_is_repaired_before_returning_to_next_step():
     with GitTemporaryDirectory():
         coder = make_coder()
         original_test = Path("test_calc.py").read_bytes()
-        responses = iter([
-            "def double(n):\n    return 0\n",
-            "def double(n):\n    return 1\n",
-            "def double(n):\n    return n + n\n",
-        ])
+        responses = iter(
+            [
+                "def double(n):\n    return 0\n",
+                "def double(n):\n    return 1\n",
+                "def double(n):\n    return n + n\n",
+            ]
+        )
         statuses = []
 
         def send(messages, **kwargs):
@@ -93,21 +101,33 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
             statuses.append(result[0])
             return result
 
-        def decide(messages):
+        def decide(messages, **kwargs):
             if messages[0]["content"].startswith("TDD production edit"):
-                return json.dumps({"files": [
-                    {"path": "calc.py", "content": (
-                        f"def double(n):\n    return {len(statuses) - 1}\n"
-                    )},
-                    {"path": "helper.py", "content": "value = 0\n"},
-                ]})
+                return json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "calc.py",
+                                "content": f"def double(n):\n    return {len(statuses) - 1}\n",
+                            },
+                            {"path": "helper.py", "content": "value = 0\n"},
+                        ]
+                    }
+                )
             if messages[0]["content"].startswith("Review refactoring"):
                 if not controller.refactor_history:
-                    return json.dumps({
-                        "action": "refactor", "reason": "Extract a helper",
-                        "changes": [{"path": "calc.py", "before": "return n * 2",
-                                     "after": "return 0"}]
-                    })
+                    return json.dumps(
+                        {
+                            "action": "refactor",
+                            "reason": "Extract a helper",
+                            "kind": "simplification",
+                            "preserves": "Keep the tested double result",
+                            "evidence": [{"path": "calc.py", "fragment": "return n * 2"}],
+                            "changes": [
+                                {"path": "calc.py", "before": "return n * 2", "after": "return 0"}
+                            ],
+                        }
+                    )
                 assert "0 != 4" in messages[-1]["content"]
                 return json.dumps({"action": "complete", "reason": "No other useful refactor"})
             context = messages[-1]["content"]
@@ -116,10 +136,20 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
             assert "restored" in context.lower()
             assert "# user's uncommitted work" in context
             if cycles.call_count == 1:
-                return json.dumps({
-                    "action": "next", "behavior": "Double 3 to get 6", "reason": "Missing three"
-                })
-            return json.dumps({"action": "done", "reason": "Finished after abandoning refactor"})
+                return json.dumps(
+                    {"action": "next", "behavior": "Double 3 to get 6", "reason": "Missing three"}
+                )
+            return json.dumps(
+                {
+                    "action": "done",
+                    "reason": "Finished after abandoning refactor",
+                    "evidence": [
+                        {"path": "test_calc.py", "fragment": "self.assertEqual(double(2), 4)"}
+                    ],
+                    "assumptions": [],
+                    "unverified": [],
+                }
+            )
 
         with (
             patch.object(coder, "send") as legacy_send,
@@ -148,19 +178,26 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
         assert "-value = 0" in messages
 
 
-@pytest.mark.parametrize("before,after", [
-    ("return 99", "return n + n"), ("return n * 2", "return n * 2"), ("n", "value")
-])
+@pytest.mark.parametrize(
+    "before,after",
+    [("return 99", "return n + n"), ("return n * 2", "return n * 2"), ("n", "value")],
+)
 def test_refactor_requires_a_current_fragment_and_real_transformation(before, after):
     with GitTemporaryDirectory():
         coder = make_coder()
         controller = TDDController(coder)
         original = Path("calc.py").read_bytes()
         with pytest.raises(ValueError):
-            controller.validate_refactor_decision({
-                "action": "refactor", "reason": "Replace multiplication with addition",
-                "changes": [{"path": "calc.py", "before": before, "after": after}],
-            })
+            controller.validate_refactor_decision(
+                {
+                    "action": "refactor",
+                    "reason": "Replace multiplication with addition",
+                    "kind": "simplification",
+                    "preserves": "Keep the tested result",
+                    "evidence": [{"path": "calc.py", "fragment": "return n * 2"}],
+                    "changes": [{"path": "calc.py", "before": before, "after": after}],
+                }
+            )
         assert Path("calc.py").read_bytes() == original
 
 
@@ -171,15 +208,15 @@ def test_failed_candidate_is_rejected_before_writing_or_retesting():
         statuses = []
         proposals = iter([0, 0, 1, 0, 2])
 
-        def answer(messages):
+        def answer(messages, **kwargs):
             value = next(proposals)
             if len(statuses) == 1:
                 assert Path("calc.py").read_text().endswith("return 0\n")
             if len(statuses) == 2:
                 assert Path("calc.py").read_text().endswith("return 1\n")
-            return json.dumps({"files": [{
-                "path": "calc.py", "content": f"def double(n):\n    return {value}\n"
-            }]})
+            return json.dumps(
+                {"files": [{"path": "calc.py", "content": f"def double(n):\n    return {value}\n"}]}
+            )
 
         def tests(*args, **kwargs):
             result = run_cmd(*args, **kwargs)
@@ -198,8 +235,19 @@ def test_failed_candidate_is_rejected_before_writing_or_retesting():
         assert "previously failed" in messages
         assert Path("calc.py").read_text().endswith("return n * 2\n")
         with pytest.raises(ValueError, match="previously failed"):
-            controller.validate_refactor_decision({
-                "action": "refactor", "reason": "Try zero again after rollback",
-                "changes": [{"path": "calc.py", "before": Path("calc.py").read_text(),
-                             "after": "def double(n):\n    return 0\n"}],
-            })
+            controller.validate_refactor_decision(
+                {
+                    "action": "refactor",
+                    "reason": "Try zero again after rollback",
+                    "kind": "simplification",
+                    "preserves": "Keep the tested result",
+                    "evidence": [{"path": "calc.py", "fragment": "return n * 2"}],
+                    "changes": [
+                        {
+                            "path": "calc.py",
+                            "before": Path("calc.py").read_text(),
+                            "after": "def double(n):\n    return 0\n",
+                        }
+                    ],
+                }
+            )

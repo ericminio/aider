@@ -128,9 +128,20 @@ outside-repository paths are rejected. Each file contains one final version; the
 whole-file markdown parser is not used for TDD responses. Next-move decisions
 also require the fields for their chosen action. Invalid JSON or an invalid
 proposal triggers a correction request, up to three responses, without applying
-rejected edits. This uses prompts plus local validation and retries, rather than
-provider-enforced structured generation. Ordinary Aider chat keeps its configured
-edit format.
+rejected edits. On providers advertising `response_format`, TDD requests native
+JSON-object mode. Unknown providers use prompt-based JSON; an explicit
+unsupported-parameter response falls back once and disables JSON mode for that
+model instance. Local validation and bounded retries apply in both cases. JSON
+mode constrains syntax, not schema or decision quality. Ordinary Aider chat keeps
+its configured edit format and request parameters.
+
+All proposal paths also pass a test-environment gate. Known package manifests,
+lockfiles, runner configuration (including `conftest.py` and `*.config.*`), Git
+metadata, workflow files and existing files named directly in the test command
+are protected in red, green and refactor phases. This supplements read-only paths
+and conventional test-path detection. It is not a sandbox or a complete analysis
+of arbitrary shell wrappers and transitive configuration; mark custom test
+infrastructure read-only when starting Aider.
 
 If exactly one new test is discovered and the entire suite already passes, the
 controller keeps the new test as coverage and skips the green production edit.
@@ -149,7 +160,21 @@ the latest files for inspection. JSON-format retries remain a separate limit.
 After each green, the first model request asks what small refactoring can remove
 duplication now. It inspects production code and tests, including hardcoded
 production answers that duplicate test examples. A `refactor` JSON response
-contains a concrete reason and a `changes` collection. Each
+contains a concrete reason, `kind` (`duplication` or `simplification`), `preserves`
+(why tested behavior is preserved), source `evidence`, and a `changes` collection.
+Each evidence item contains `path` and `fragment`, an exact unique quote from
+current context. Duplication needs two distinct, nonoverlapping source occurrences;
+simplification needs one. Read-only references are available in every phase.
+These checks ground the explanation in real source; they cannot prove its meaning.
+Duplication proposals also name `duplicate`, an exact source string present in
+every citation. The proposed production transformation must reduce its occurrence
+count. Extracting a calculation that appears only once into a variable does not
+satisfy this rule. Rejection feedback asks the reviewer to reassess the idea and
+choose `complete` when no grounded improvement remains.
+Simplification plans must reduce total non-whitespace production source length.
+This conservative check excludes expansions and equivalent style preferences;
+shorter text alone does not prove simpler semantics.
+Each
 change contains a repository-relative `path`, an exact `before` fragment that
 occurs once in the current file, and its `after` replacement. Aider validates and
 applies these transformations directly; a separate model does not reinterpret
@@ -161,6 +186,14 @@ remove one small piece of duplication supported by the current examples, rather
 than introduce a complete algorithm for untested cases. A broken suite prompts
 repairs to reconsider the size of the step and reduce toward the green baseline
 when appropriate.
+
+The complete candidate, including repairs, may add/delete at most twelve nonblank
+lines relative to its pre-refactor green baseline, summed across files. This is
+a deliberately conservative size budget, not a semantic definition of refactoring.
+Large changes must be split into smaller steps. A compact rewrite can still be
+too ambitious; evaluating that remains a model judgment. No useful refactor is a
+normal outcome, and the prompts explicitly discourage filling the budget or
+introducing a full algorithm for untested categories.
 
 Test refactoring is disabled. Aider cancels proposals naming conventional test
 paths before requesting edits, records the cancellation, and asks for another
@@ -175,14 +208,30 @@ included in review context so the model can choose a different approach.
 
 After `complete` or the refactor-budget limit, a separate model call will
 choose `next` or `done`. It reviews the original intention, current code, tests
-and test output, selecting one missing behavior with code evidence or explaining
-why the full intention is satisfied. This call cannot request refactoring, and
+and test output, selecting one missing behavior or useful untested category even
+if the current implementation may already pass it. It compares distinct cases
+implied by the requirement rather than imposing a fixed minimum number of tests.
+`behavior` and `reason` are strings. This call cannot request refactoring, and
 the refactoring call cannot select another behavior or declare the intention done.
 Invalid actions are returned for JSON correction. Already-passing new tests still
 become coverage without a production edit and proceed through the same review.
 Known prompt placeholder values are rejected locally. Prompts describe the JSON
 fields without example filler values. Code assessment and completion remain model
 judgments; checking an exact fragment does not prove the change is a good refactor.
+
+A `done` decision requires `evidence` quoting current test source, `assumptions`
+(a list of input-domain assumptions), and `unverified` (a list of remaining in-scope
+gaps). Empty lists are permitted. Production source cannot substitute for test
+evidence. A nonempty `unverified` list is rejected with a request to select the next
+example. The completion message labels the result as a model assessment and prints
+the cited test evidence and assumptions. Quotes establish what test source exists;
+they do not prove that all relevant cases or execution paths were tested. The model
+must distinguish tested facts from reasoning about generality and avoid claiming
+that untested cases were verified.
+
+For repeatable evaluation with real models, see `benchmark/TDD.md`. The harness
+checks example selection, coverage selection, unnecessary refactoring and an
+end-to-end kata against an independent oracle, retaining model responses and logs.
 
 Red and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure
