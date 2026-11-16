@@ -52,7 +52,10 @@ def test_absolute_path_missing_leading_slash_is_rejected(tmp_path):
 def test_rejected_multi_test_proposal_never_reaches_disk(tmp_path):
     coder = Mock()
     coder.root = str(tmp_path)
-    coder.io = InputOutput(yes=True, pretty=False, fancy_input=False)
+    history = tmp_path / "chat.md"
+    coder.io = InputOutput(
+        yes=True, pretty=False, fancy_input=False, chat_history_file=str(history)
+    )
     coder.test_cmd = "npm test"
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
@@ -89,6 +92,12 @@ def test_rejected_multi_test_proposal_never_reaches_disk(tmp_path):
     assert coder.main_model.simple_send_with_retries.call_count == 2
     assert test_file.read_text() == original + "\ntest('a', () => {});\n"
     assert not (tmp_path / "calc.js").exists()
+
+    log = history.read_text()
+    assert "+++ b/test.js" in log
+    assert "+test('a', () => {});" in log
+    assert "+test('b', () => {});" not in log
+    assert "+++ b/calc.js" not in log
 
 
 def test_duplicate_node_test_name_is_corrected_before_writing(tmp_path):

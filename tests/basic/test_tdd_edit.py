@@ -10,10 +10,16 @@ from aider.tdd_json import parse_object
 
 
 @pytest.mark.parametrize("missing_slash", [False, True])
-def test_conflicting_json_file_entries_are_corrected_before_writing(tmp_path, missing_slash):
+@pytest.mark.parametrize("unchanged", [False, True])
+def test_conflicting_json_file_entries_are_corrected_before_writing(
+    tmp_path, missing_slash, unchanged
+):
     coder = Mock()
     coder.root = str(tmp_path)
-    coder.io = InputOutput(yes=True, pretty=False, fancy_input=False)
+    history = tmp_path / "chat.md"
+    coder.io = InputOutput(
+        yes=True, pretty=False, fancy_input=False, chat_history_file=str(history)
+    )
     coder.abs_read_only_fnames = set()
     coder.get_abs_fnames_content.return_value = []
     coder.cur_messages = []
@@ -21,7 +27,7 @@ def test_conflicting_json_file_entries_are_corrected_before_writing(tmp_path, mi
     coder.abs_root_path.side_effect = lambda path: str(tmp_path / path)
     coder.prepare_to_edit.side_effect = lambda edits: edits
     target = tmp_path / "calc.js"
-    original = "export const f = () => 0;\n"
+    original = f"export const f = () => {2 if unchanged else 0};\n"
     target.write_text(original)
     calls = []
 
@@ -45,6 +51,16 @@ def test_conflicting_json_file_entries_are_corrected_before_writing(tmp_path, mi
     assert len(calls) == 2
     assert target.read_text() == "export const f = () => 2;\n"
     coder.run.assert_not_called()
+    log = history.read_text()
+    if unchanged:
+        assert "calc.js: no changes." in log
+        assert "--- a/calc.js" not in log
+    else:
+        assert "--- a/calc.js" in log
+        assert "+++ b/calc.js" in log
+        assert "-export const f = () => 0;" in log
+        assert "+export const f = () => 2;" in log
+    assert "+export const f = () => 1;" not in log
 
 
 @pytest.mark.parametrize("response", [
@@ -109,3 +125,12 @@ def test_invalid_json_never_reaches_the_file_writer(tmp_path):
 
     coder.prepare_to_edit.assert_not_called()
     coder.io.write_text.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("behavior", "one concrete input/output example"),
+    ("reason", "duplication present now and the small change that removes it"),
+])
+def test_copied_prompt_placeholders_are_rejected(field, value):
+    with pytest.raises(ValueError, match="placeholder"):
+        parse_object(json.dumps({field: value}))

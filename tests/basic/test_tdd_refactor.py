@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from aider.coders import Coder
 from aider.io import InputOutput
 from aider.models import Model
@@ -94,11 +96,20 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
         def decide(messages):
             if messages[0]["content"].startswith("TDD production edit"):
                 return json.dumps({"files": [
-                    {"path": "calc.py", "content": "def double(n):\n    return 0\n"},
+                    {"path": "calc.py", "content": (
+                        f"def double(n):\n    return {len(statuses) - 1}\n"
+                    )},
                     {"path": "helper.py", "content": "value = 0\n"},
                 ]})
-            if not controller.refactor_history:
-                return json.dumps({"action": "refactor", "reason": "Extract a helper"})
+            if messages[0]["content"].startswith("Review refactoring"):
+                if not controller.refactor_history:
+                    return json.dumps({
+                        "action": "refactor", "reason": "Extract a helper",
+                        "changes": [{"path": "calc.py", "before": "return n * 2",
+                                     "after": "return 0"}]
+                    })
+                assert "0 != 4" in messages[-1]["content"]
+                return json.dumps({"action": "complete", "reason": "No other useful refactor"})
             context = messages[-1]["content"]
             assert "Extract a helper" in context
             assert "0 != 4" in context
@@ -112,6 +123,7 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
 
         with (
             patch.object(coder, "send") as legacy_send,
+            patch.object(coder.io, "tool_output", wraps=coder.io.tool_output) as log,
             patch("aider.tdd.run_cmd", side_effect=tests),
             patch.object(
                 controller, "run_cycle", side_effect=["first green", "next green"]
@@ -129,3 +141,65 @@ def test_exhausted_refactor_restores_dirty_green_files_and_informs_next_decision
         assert not Path("helper.py").exists()
         assert Path("unrelated.txt").read_text() == "user's other work"
         assert coder.abs_fnames == original_files
+        messages = "\n".join(call.args[0] for call in log.call_args_list if call.args)
+        assert "TDD: rollback — calc.py: modified." in messages
+        assert "TDD: rollback — helper.py: removed." in messages
+        assert "+# user's uncommitted work" in messages
+        assert "-value = 0" in messages
+
+
+@pytest.mark.parametrize("before,after", [
+    ("return 99", "return n + n"), ("return n * 2", "return n * 2"), ("n", "value")
+])
+def test_refactor_requires_a_current_fragment_and_real_transformation(before, after):
+    with GitTemporaryDirectory():
+        coder = make_coder()
+        controller = TDDController(coder)
+        original = Path("calc.py").read_bytes()
+        with pytest.raises(ValueError):
+            controller.validate_refactor_decision({
+                "action": "refactor", "reason": "Replace multiplication with addition",
+                "changes": [{"path": "calc.py", "before": before, "after": after}],
+            })
+        assert Path("calc.py").read_bytes() == original
+
+
+def test_failed_candidate_is_rejected_before_writing_or_retesting():
+    with GitTemporaryDirectory():
+        coder = make_coder()
+        controller = TDDController(coder)
+        statuses = []
+        proposals = iter([0, 0, 1, 0, 2])
+
+        def answer(messages):
+            value = next(proposals)
+            if len(statuses) == 1:
+                assert Path("calc.py").read_text().endswith("return 0\n")
+            if len(statuses) == 2:
+                assert Path("calc.py").read_text().endswith("return 1\n")
+            return json.dumps({"files": [{
+                "path": "calc.py", "content": f"def double(n):\n    return {value}\n"
+            }]})
+
+        def tests(*args, **kwargs):
+            result = run_cmd(*args, **kwargs)
+            statuses.append(result[0])
+            return result
+
+        with (
+            patch.object(coder.main_model, "simple_send_with_retries", side_effect=answer),
+            patch("aider.tdd.run_cmd", side_effect=tests),
+            patch.object(coder.io, "tool_output", wraps=coder.io.tool_output) as log,
+        ):
+            assert controller.run_refactor("Double numbers", "Simplify calculation") is not None
+
+        assert statuses == [1, 1, 1, 0]
+        messages = "\n".join(call.args[0] for call in log.call_args_list if call.args)
+        assert "previously failed" in messages
+        assert Path("calc.py").read_text().endswith("return n * 2\n")
+        with pytest.raises(ValueError, match="previously failed"):
+            controller.validate_refactor_decision({
+                "action": "refactor", "reason": "Try zero again after rollback",
+                "changes": [{"path": "calc.py", "before": Path("calc.py").read_text(),
+                             "after": "def double(n):\n    return 0\n"}],
+            })

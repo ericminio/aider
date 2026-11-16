@@ -4,6 +4,7 @@ from pathlib import Path
 from grep_ast.tsl import get_parser
 
 from aider.coders.wholefile_coder import WholeFileCoder
+from aider.tdd_changes import FileChanges
 from aider.tdd_json import parse_object
 
 
@@ -26,31 +27,20 @@ class RedProposal:
             {
                 "role": "system",
                 "content": (
-                    "TDD RED proposal. Return only a JSON object, without markdown. "
-                    "Use this structure: "
-                    '{"tests":[{"path":"relative/test-file", "imports":["import line"], '
-                    '"code":"one new test definition"}], '
-                    '"stubs":[{"path":"relative/source-file", "content":"minimal stub"}]}. '
-                    "The tests collection must contain exactly one item. Each item represents "
-                    "one test, not a whole test file or suite. Put only the new test definition "
-                    "in code; never repeat existing tests. Give the test a unique descriptive "
-                    "name in its target file, "
-                    "including its specific input and expected behavior rather than repeating "
-                    "a generic title. Imports is a list of required import "
-                    "lines; existing imports will be retained. The tool appends the new test "
-                    "to its file. The test MUST exercise the actual production function. "
-                    "Include its import from the production module in imports when absent. "
-                    "Never define, shadow, mock or reimplement the function under test inside "
-                    "the test code. Put any missing implementation stub in a separate production "
-                    "file in stubs and import that exported function. Follow the visible test "
-                    "framework, directory and discovery "
-                    "command. Preserve the exact expected output from the user's intention. "
-                    "Create new test files directly when needed. Read-only files cannot be "
-                    "edited. Stubs may create only NEW production files; use an empty list if "
-                    "the implementation exists. A stub must make the test fail on its assertion, "
-                    "not on an import or undefined name. Do not implement the behavior, add "
-                    "extra examples, or run commands. Do not add comments to generated code, "
-                    "including tests, stubs and repairs. JSON string values must escape newlines."
+                    "TDD RED proposal. Add one test for the selected behavior, using the "
+                    "project's test framework. Import the test runner, assertions and real "
+                    "production function. Keep the expected result exact. Give the test a "
+                    "unique name describing its input and result.\n"
+                    "Return JSON with tests and stubs arrays. Each test has path, imports "
+                    "(import-line strings), and code (the new test definition). Each stub has "
+                    "path and content (minimal production code). Use actual strings. "
+                    "Include exactly one tests item, not an entire suite. Aider adds imports "
+                    "and appends the test; existing tests stay unchanged. If production code "
+                    "exists, use stubs: []. Otherwise create only the stub needed for an "
+                    "assertion failure and import it from the test. Do not implement the "
+                    "function inside the test or create an unused replacement module. "
+                    "Use repository-relative paths. Leave read-only files unchanged. "
+                    "Add no code comments. Aider applies the proposal and runs the tests."
                 ),
             },
             {
@@ -64,14 +54,11 @@ class RedProposal:
         ]
         if feedback:
             messages[-1]["content"] += (
-                f"\nThe red gate rejected the current test:\n{feedback}\n"
-                f"Repair the SAME test in {self.test_path}. Return the one-test JSON proposal "
-                "again, with ALL imports needed by this test. The tool replaces your previous "
-                "proposal; it will not append another test. Preserve the intended behavior and "
-                "expected result. Fix test setup, imports or syntax so the real production "
-                "function is exercised and fails an assertion. Do not weaken the assertion or "
-                "implement production behavior. Return stubs: []; "
-                "production files must stay unchanged."
+                f"\nRepair this test: {self.test_path}\nFailure:\n{feedback}\n"
+                "Return the same one-test proposal with all required imports. Aider replaces "
+                "the previous proposal. Preserve the behavior and expected result; repair "
+                "setup or syntax without weakening assertions. Return stubs: []; leave "
+                "production files unchanged."
             )
         for attempt in range(1, self.max_attempts + 1):
             coder.io.tool_output(f"TDD: red JSON proposal {attempt}/{self.max_attempts}.")
@@ -85,9 +72,8 @@ class RedProposal:
                     {
                         "role": "user",
                         "content": (
-                            f"Rejected: {err}. Return a corrected JSON proposal with exactly "
-                            "one tests item. No files have been written. "
-                            "Keep only the next smallest test."
+                            f"Rejected: {err}. No files were written. "
+                            "Return corrected JSON with exactly one tests item."
                         ),
                     },
                 ]
@@ -98,6 +84,7 @@ class RedProposal:
             test_path = edits[0][0]
             full_path = Path(coder.root) / test_path
             original = coder.io.read_text(str(full_path)) if full_path.exists() else ""
+            changes = FileChanges(coder, [path for path, _, _ in edits])
             approved = coder.prepare_to_edit(edits)
             if len(approved) != len(edits):
                 coder.io.tool_error("TDD: red proposal was not fully approved; stopping.")
@@ -107,8 +94,8 @@ class RedProposal:
                 self.test_path = test_path
                 self.original_test_content = original
             for path, _, _ in approved:
-                coder.io.tool_output(f"Applied edit to {path}")
                 coder.aider_edited_files.add(path)
+            changes.show()
             coder.partial_response_content = response
             coder.cur_messages += [
                 {"role": "user", "content": f"TDD red: {behavior}"},

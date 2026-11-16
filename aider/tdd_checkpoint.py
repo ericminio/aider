@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from aider.tdd_changes import FileChanges
+
 
 class FileCheckpoint:
     """Capture exact pre-edit file bytes without resetting the user's Git state."""
@@ -34,6 +36,9 @@ class FileCheckpoint:
     def restore(self):
         if self.restored:
             return
+        changes = FileChanges(self.coder, [
+            str(path.relative_to(Path(self.coder.root).resolve())) for path in self.files
+        ])
         for path, original in self.files.items():
             if original is None:
                 path.unlink(missing_ok=True)
@@ -45,6 +50,7 @@ class FileCheckpoint:
         self.coder.abs_fnames = self.editable
         self.coder.aider_edited_files = self.edited
         self.restored = True
+        changes.show("rollback")
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.coder.prepare_to_edit = self.prepare_to_edit

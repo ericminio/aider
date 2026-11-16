@@ -1,6 +1,31 @@
 import json
 
 
+PLACEHOLDERS = {
+    "one concrete input/output example", "one concrete example",
+    "duplication present now and the small change that removes it",
+    "specific duplication and how to remove it", "specific duplication to remove",
+    "evidence in the current code", "code evidence of missing behavior",
+    "how the code satisfies the full intention", "why the full intention is satisfied",
+    "no useful duplication removal remains", "why no useful refactoring remains",
+    "relative/production-file", "relative/source-file", "relative/test-file",
+}
+
+
+def reject_placeholders(value):
+    if isinstance(value, dict):
+        for field, item in value.items():
+            if field in ("reason", "behavior", "path") and isinstance(item, str):
+                if item.strip().casefold() in PLACEHOLDERS:
+                    raise ValueError(
+                        f"{field} contains a prompt placeholder; supply a concrete value"
+                    )
+            reject_placeholders(item)
+    elif isinstance(value, list):
+        for item in value:
+            reject_placeholders(item)
+
+
 def parse_object(response):
     def unique_keys(pairs):
         result = {}
@@ -16,6 +41,7 @@ def parse_object(response):
         raise ValueError(f"Return one valid JSON object: {err}") from err
     if not isinstance(value, dict):
         raise ValueError("Return one JSON object")
+    reject_placeholders(value)
     return value
 
 

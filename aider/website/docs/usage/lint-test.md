@@ -90,8 +90,7 @@ Then give it an intention:
 ```
 
 Override the cycle budget for a run with `/tdd --cycles 5 <intention>`.
-The budget limits red/green cycles; the model may stop earlier with completion
-or a clarification question.
+The budget limits red/green cycles; the model may stop earlier with completion.
 
 The controller checks that the baseline passes, asks the model for exactly one
 failing test as JSON, validates the proposal, applies the edit and runs the suite.
@@ -147,31 +146,43 @@ leaving production files unchanged. There are up to three execution attempts
 gate accepts an assertion failure. If repairs are exhausted, it stops and leaves
 the latest files for inspection. JSON-format retries remain a separate limit.
 
-After each green, another model request reviews the original intention,
-current editable-file contents, tests and passing test output. It either identifies
-one missing behavior with code evidence, proposes an experiment to resolve a
-specific uncertainty, identifies duplication to refactor, explains why the
-intention is complete, or asks a focused clarification question. A passing
-experiment is recorded as a finding (including its question and example) and fed
-into the next decision as evidence toward completion. If its test fails, the normal
-red/green path implements that behavior and the finding records that it was missing.
+After each green, the first model request asks what small refactoring can remove
+duplication now. It inspects production code and tests, including hardcoded
+production answers that duplicate test examples. A `refactor` JSON response
+contains a concrete reason and a `changes` collection. Each
+change contains a repository-relative `path`, an exact `before` fragment that
+occurs once in the current file, and its `after` replacement. Aider validates and
+applies these transformations directly; a separate model does not reinterpret
+the initial plan. Absent or ambiguous fragments and unchanged plans are rejected
+before writing. If no useful refactoring remains, the reviewer returns `complete`
+with a reason. `complete` ends the refactoring phase, not the overall intention. Guards, base
+cases and algorithm seeds may remain specific when legitimate. Refactoring should
+remove one small piece of duplication supported by the current examples, rather
+than introduce a complete algorithm for untested cases. A broken suite prompts
+repairs to reconsider the size of the step and reduce toward the green baseline
+when appropriate.
 
-The decision prompt asks the model to inspect nongeneric code such as branches
-tied to examples and hardcoded answers. Such code is suspicious, not automatically
-incomplete: guards, validation, base cases and legitimate domain rules may remain
-specific. Completion is judged against the intention and evidence, rather than
-whether more possible examples exist. This code assessment remains model judgment.
-For example,
-hardcoded production answers may duplicate the examples in tests. A refactor can
-replace those answers with a rule while keeping the tests and public API unchanged.
-It uses a separate model turn and real test run, then the controller decides again
-using the updated code and test output.
+Test refactoring is disabled. Aider cancels proposals naming conventional test
+paths before requesting edits, records the cancellation, and asks for another
+production refactoring. Cancelled proposals consume a refactor-budget slot.
 
-The controller allows up to three refactors per cycle, checking the suite after
-each and asking for the next move again. Refactors do not consume red/green
-cycles. The next-move model receives the remaining refactor budget; a fourth
-refactor request stops the run at that limit. Abandoned refactors also count
-toward the budget.
+After a refactor and its passing test run, the controller asks the same question
+again against the updated files. It does not move to behavior selection after
+just one refactor. Up to three proposals may be attempted per cycle. At that
+limit the controller moves directly to choosing the next behavior or done,
+without another refactor-review call. Abandoned refactors also count and are
+included in review context so the model can choose a different approach.
+
+After `complete` or the refactor-budget limit, a separate model call will
+choose `next` or `done`. It reviews the original intention, current code, tests
+and test output, selecting one missing behavior with code evidence or explaining
+why the full intention is satisfied. This call cannot request refactoring, and
+the refactoring call cannot select another behavior or declare the intention done.
+Invalid actions are returned for JSON correction. Already-passing new tests still
+become coverage without a production edit and proceed through the same review.
+Known prompt placeholder values are rejected locally. Prompts describe the JSON
+fields without example filler values. Code assessment and completion remain model
+judgments; checking an exact fragment does not prove the change is a good refactor.
 
 Red and refactor share the same bounded propose/test/evaluate/repair loop, with
 different acceptance conditions. A refactor that breaks tests gets the failure
@@ -179,7 +190,12 @@ output and up to two repair turns. Each repair receives the original green file
 contents and all earlier failed attempts in that refactor, including their diffs
 against green and corresponding test output. The latest candidate remains visible
 as the current files; the prompt asks the model to diagnose the failure rather
-than rebuild an earlier unsuccessful candidate. If all three attempts fail, the controller
+than rebuild an earlier unsuccessful candidate. Aider remembers failed editable-file
+states (including the tests) for the current `/tdd` run. An identical candidate is
+rejected before writing or retesting, including after rollback; the model receives
+the previous failure and can correct the proposal within the JSON retry budget.
+This checks exact text states, not semantic equivalence. Repairs still return full
+production files as JSON. If all three execution attempts fail, the controller
 abandons that refactor and restores the exact file state from before its edits,
 including any uncommitted changes. Files created by that refactor are removed;
 the Git index and unrelated files are left alone. Restoration is verified by a
@@ -190,8 +206,12 @@ test output alongside the restored code, so it can select another move without
 immediately repeating the same rabbit hole. If the restored suite still fails,
 the controller stops rather than treating it as green.
 
-The controller prints each selected behavior or refactoring before editing. It
-permits the configured number of red/green cycles and one refactor per green cycle.
+The controller prints each selected behavior or refactoring before editing.
+Accepted edits show a unified diff for each file, including tests and new stubs.
+Unchanged responses are explicitly logged as no changes. Refactor rollback shows
+the reverse changes, including removal of newly created files. These diffs also
+appear in Aider's chat-history file. Rejected proposals produce no edit diff. It
+permits the configured number of red/green cycles and up to three refactors per cycle.
 Refactoring does not consume a test cycle and can occur after the final green too.
 If more tests are selected after the budget is exhausted, it stops without claiming the
 whole intention is complete.
