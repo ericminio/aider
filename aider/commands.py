@@ -990,6 +990,32 @@ class Commands:
 
         self.io.tool_output(combined_output)
 
+    def cmd_tdd(self, args):
+        "Run experimental TDD cycles (default 10; /tdd --cycles N <intention>)"
+        from aider.tdd import TDDController
+
+        intention = args.strip()
+        options = {}
+        if not intention:
+            self.io.tool_error("Usage: /tdd [--cycles N] <intention>")
+            return
+        parts = intention.split(maxsplit=2)
+        if parts[0] == "--cycles":
+            try:
+                cycles = int(parts[1])
+                if cycles < 1 or len(parts) != 3:
+                    raise ValueError()
+            except (IndexError, ValueError):
+                self.io.tool_error("Usage: /tdd --cycles <positive integer> <intention>")
+                return
+            options["max_cycles"] = cycles
+            intention = parts[2]
+        if not isinstance(self.coder.test_cmd, str) or not self.coder.test_cmd.strip():
+            self.io.tool_error("TDD requires a test command; start aider with --test-cmd.")
+            return
+
+        TDDController(self.coder, **options).run(intention)
+
     def cmd_test(self, args):
         "Run a shell command and add the output to the chat on non-zero exit code"
         if not args and self.coder.test_cmd:

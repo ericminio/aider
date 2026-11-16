@@ -1,0 +1,48 @@
+name: TDD controller
+
+on:
+  push:
+    branches: [feat/tdd-controller]
+  pull_request:
+    paths:
+      - 'aider/tdd*.py'
+      - 'aider/models.py'
+      - 'aider/commands.py'
+      - 'tests/basic/test_tdd*.py'
+      - '.github/workflows/tdd-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tdd-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -e . pytest pytest-env flake8
+      - name: Test controller, model transport, command and editing integration
+        env:
+          AIDER_ANALYTICS: 'false'
+        run: >-
+          python -m pytest tests/basic/test_tdd*.py tests/basic/test_models.py
+          tests/basic/test_commands.py tests/basic/test_wholefile.py -q
+      - name: Lint controller
+        run: >-
+          python -m flake8 aider/tdd*.py tests/basic/test_tdd*.py
